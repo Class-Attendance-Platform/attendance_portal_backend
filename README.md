@@ -226,6 +226,9 @@ POST   /api/admin/classrooms/                    Admin
 PUT    /api/admin/classrooms/{uuid}/             Admin
 DELETE /api/admin/classrooms/{uuid}/             Admin (logical)
 POST   /api/admin/classrooms/{uuid}/promote/     Admin  ← bulk promote students
+GET    /api/admin/classrooms/{uuid}/students/    Admin  ← list students in classroom
+POST   /api/admin/classrooms/{uuid}/students/    Admin  ← add students to classroom
+DELETE /api/admin/classrooms/{uuid}/students/    Admin  ← remove students from classroom
 POST   /api/admin/course-info/                   Admin  ← assign teacher+course to semester
 GET    /api/admin/course-info/                   Admin
 PUT    /api/admin/course-info/{uuid}/            Admin
