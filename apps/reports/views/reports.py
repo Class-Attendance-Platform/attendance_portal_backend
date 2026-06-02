@@ -13,7 +13,7 @@ class ExportReportView(APIView):
     def get(self, request, uuid):
         ci = get_object_or_404(CourseInfo, id=uuid, deleted=False)
 
-        fmt = request.query_params.get('format', 'xlsx').lower().strip()
+        fmt = request.query_params.get('export_format', 'xlsx').lower().strip()
         if fmt not in ('csv', 'xlsx', 'pdf', 'docx'):
             return Response(
                 {'success': False, 'message': f'Unsupported format "{fmt}". Use csv, xlsx, pdf, or docx.'},
