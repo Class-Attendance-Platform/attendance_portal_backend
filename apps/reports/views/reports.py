@@ -8,11 +8,6 @@ from apps.reports.generators import export_csv, export_xlsx, export_pdf, export_
 
 
 class ExportReportView(APIView):
-    """
-    GET /api/reports/course-info/{uuid}/export/
-        ?format=csv|xlsx|pdf|docx
-        &date=YYYY-MM-DD   (optional — single day filter)
-    """
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
