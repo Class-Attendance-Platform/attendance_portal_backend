@@ -29,7 +29,6 @@ class StartSessionView(APIView):
         data = serializer.validated_data
         ci = get_object_or_404(CourseInfo, id=data['course_info_id'], deleted=False)
 
-        # Block if a session is already active for this course
         if AttendanceSession.objects.filter(course_info=ci, is_active=True).exists():
             return Response({'success': False, 'message': 'A session is already active for this course.'}, status=400)
 
@@ -80,14 +79,40 @@ class StopSessionView(APIView):
         session.ended_at = timezone.now()
         session.save()
 
-        commit_session_to_db(session, submissions)
+        if submissions:
+            commit_session_to_db(session, submissions)
+        else:
+            # Redis expired — fill ABSENT for anyone not already logged
+            from apps.attendance.models import AttendanceLog as AL
+            from apps.academic.models import StudentClassroom
+            enrolled = StudentClassroom.objects.filter(
+                classroom=session.course_info.classroom
+            ).select_related('student')
+            already_logged = set(
+                AL.objects.filter(session=session).values_list('student_id', flat=True)
+            )
+            logs_to_create = []
+            for membership in enrolled:
+                if membership.student.id not in already_logged:
+                    logs_to_create.append(AL(
+                        session=session,
+                        course_info=session.course_info,
+                        student=membership.student,
+                        date=session.date,
+                        status=AL.Status.ABSENT,
+                        source=session.mode,
+                    ))
+            AL.objects.bulk_create(logs_to_create, ignore_conflicts=True)
+
+        present_count = AttendanceLog.objects.filter(
+            session=session, status=AttendanceLog.Status.PRESENT
+        ).count()
 
         return Response({
             'success': True,
             'message': 'Session stopped and attendance committed.',
-            'total_present': len(submissions),
+            'total_present': present_count,
         })
-
 
 class SessionStatusView(APIView):
     """Get live session status and current submissions."""

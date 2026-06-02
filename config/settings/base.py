@@ -13,6 +13,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_extensions',
     # Third party
     'rest_framework',
     'rest_framework_simplejwt',
@@ -25,6 +26,7 @@ INSTALLED_APPS = [
     'apps.attendance',
     'apps.hardware',
     'apps.reports',
+    
 ]
 
 MIDDLEWARE = [
