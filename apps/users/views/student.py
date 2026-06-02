@@ -36,11 +36,16 @@ class StudentDeviceBindingView(APIView):
         profile = get_object_or_404(StudentProfile, student_id=student_id)
         binding = DeviceBinding.objects.filter(student=profile, is_active=True).first()
 
+        base = {
+            'student_id':   student_id,
+            'profile_uuid': str(profile.id),
+            'name':         profile.user.get_full_name(),
+        }
+
         if not binding:
-            # No binding yet — first time, allow and bind
-            return Response({'success': True, 'status': 'unbound', 'student_id': student_id})
+            return Response({'success': True, 'status': 'unbound', **base})
 
         if binding.mac_address == mac:
-            return Response({'success': True, 'status': 'verified', 'student_id': student_id})
+            return Response({'success': True, 'status': 'verified', **base})
 
         return Response({'success': False, 'status': 'mismatch', 'message': 'Device not bound to this student.'}, status=403)
