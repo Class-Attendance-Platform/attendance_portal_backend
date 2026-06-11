@@ -63,7 +63,7 @@ def get_student_attendance_summary(student_profile):
             percentage = round((present / total * 100), 2) if total > 0 else 0.0
 
             history = [
-                {'date': str(log.date), 'status': log.status}
+                {'date': str(log.date), 'present': log.status == 'PRESENT'}
                 for log in logs
             ]
 
@@ -76,11 +76,11 @@ def get_student_attendance_summary(student_profile):
                     'credits': ci.course.credits,
                 },
                 'teacher': {
-                    'name': ci.teacher.user.get_full_name() if ci.teacher else None,
+                    'userName': ci.teacher.user.get_full_name() if ci.teacher else None,
                     'email': ci.teacher.user.email if ci.teacher else None,
                 },
-                'total_classes': total,
-                'present_count': present,
+                'totalClasses': total,
+                'presentCount': present,
                 'percentage': percentage,
                 'history': history,
             })
