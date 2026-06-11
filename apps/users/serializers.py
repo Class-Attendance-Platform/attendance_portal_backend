@@ -23,7 +23,6 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id",
-            "userName",
             "username",
             "email",
             "password",
@@ -55,6 +54,11 @@ class RegisterSerializer(serializers.ModelSerializer):
             if not attrs.get("current_semester"):
                 raise serializers.ValidationError(
                     {"current_semester": "Required for students."}
+                )
+        elif role == User.Role.TEACHER:
+            if not attrs.get("employee_id"):
+                raise serializers.ValidationError(
+                    {"employee_id": "Required for teachers."}
                 )
         return attrs
 
@@ -94,7 +98,6 @@ class UserMeSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id",
-            "userName",
             "username",
             "email",
             "first_name",

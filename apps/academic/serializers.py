@@ -4,15 +4,74 @@ from apps.users.models import StudentProfile, TeacherProfile
 
 
 class SemesterSerializer(serializers.ModelSerializer):
+    students = serializers.ListField(child=serializers.UUIDField(), required=False, write_only=False)
+    courses = serializers.ListField(child=serializers.UUIDField(), required=False, write_only=False)
+
     class Meta:
         model = Semester
-        fields = ['id', 'level', 'semester', 'start_date', 'end_date', 'is_active']
+        fields = ["id", "level", "semester", "start_date", "end_date", "is_active", "students", "courses"]
 
-    def validate(self, attrs):
-        if attrs.get('start_date') and attrs.get('end_date'):
-            if attrs['start_date'] > attrs['end_date']:
-                raise serializers.ValidationError('start_date must be before end_date.')
-        return attrs
+    def get_students(self, obj):
+        from apps.academic.models import StudentClassroom
+        student_ids = StudentClassroom.objects.filter(classroom__semester=obj).values_list("student_id", flat=True).distinct()
+        return [str(sid) for sid in student_ids]
+
+    def get_courses(self, obj):
+        return [str(ci.id) for ci in obj.course_infos.all()]
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        ret["students"] = self.get_students(instance)
+        ret["courses"] = self.get_courses(instance)
+        return ret
+
+    def create(self, validated_data):
+        student_ids = validated_data.pop("students", [])
+        course_info_ids = validated_data.pop("courses", [])
+        semester = Semester.objects.create(**validated_data)
+        self._sync_relations(semester, student_ids, course_info_ids)
+        return semester
+
+    def update(self, instance, validated_data):
+        student_ids = validated_data.pop("students", None)
+        course_info_ids = validated_data.pop("courses", None)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if student_ids is not None or course_info_ids is not None:
+            self._sync_relations(instance, student_ids, course_info_ids)
+        return instance
+
+    def _sync_relations(self, semester, student_ids, course_info_ids):
+        from apps.academic.models import Classroom, StudentClassroom, CourseInfo
+        from apps.users.models import StudentProfile
+        
+        # 1. Sync Students (via a default Classroom)
+        if student_ids is not None:
+            classroom, _ = Classroom.objects.get_or_create(
+                semester=semester, 
+                name="Main",
+                defaults={"deleted": False}
+            )
+            # Remove students not in the list
+            StudentClassroom.objects.filter(classroom=classroom).exclude(student_id__in=student_ids).delete()
+            # Add new students
+            for sid in student_ids:
+                try:
+                    student = StudentProfile.objects.get(id=sid)
+                    StudentClassroom.objects.get_or_create(student=student, classroom=classroom)
+                except StudentProfile.DoesNotExist:
+                    continue
+
+        # 2. Sync CourseInfos
+        if course_info_ids is not None:
+            # First, CourseInfos that were pointing here but are no longer in the list:
+            # We dont delete CourseInfos, we just unbind them or leave them? 
+            # Actually, CourseInfo is tied to Semester. If it is removed from Semester, it should probably be deleted or moved.
+            # But the UI suggests we are selecting existing CourseInfos.
+            # Lets just update the semester FK for selected CourseInfos.
+            CourseInfo.objects.filter(id__in=course_info_ids).update(semester=semester)
+
 
 
 class CourseSerializer(serializers.ModelSerializer):
