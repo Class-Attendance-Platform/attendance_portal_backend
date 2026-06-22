@@ -23,13 +23,14 @@ class QRCheckinSerializer(serializers.Serializer):
 class AttendanceLogSerializer(serializers.ModelSerializer):
     student_name       = serializers.CharField(source='student.user.get_full_name', read_only=True)
     student_number     = serializers.IntegerField(source='student.student_id', read_only=True)
+    student_id         = serializers.UUIDField(source='student.id', read_only=True)
 
     class Meta:
         model  = AttendanceLog
         fields = [
             'id', 'date', 'time', 'status', 'source',
             'is_modified_by_teacher', 'notes',
-            'student_name', 'student_number',
+            'student_name', 'student_number', 'student_id',
         ]
 
 

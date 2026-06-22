@@ -24,11 +24,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
         user = self.user
+        data['success'] = True
         data['user'] = {
             'id': str(user.id),
-            'username': user.username,
+            'userName': user.get_full_name() or user.username,
             'email': user.email,
-            'role': user.role,
+            'role': user.role.upper(),
             'faculty': user.faculty,
             'department': user.department,
             'is_verified': user.is_verified,
@@ -55,9 +56,9 @@ class RegisterView(APIView):
                 'success': True,
                 'user': {
                     'id': str(user.id),
-                    'username': user.username,
+                    'userName': user.get_full_name() or user.username,
                     'email': user.email,
-                    'role': user.role,
+                    'role': user.role.upper(),
                 },
                 'tokens': {
                     'access': str(refresh.access_token),
