@@ -12,7 +12,8 @@ class StudentAttendanceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, uuid):
-        profile = get_object_or_404(StudentProfile, id=uuid)
+        from django.db.models import Q
+        profile = get_object_or_404(StudentProfile, Q(id=uuid) | Q(user_id=uuid))
         # Only the student themselves or admin can view
         if request.user.role == 'STUDENT' and request.user.student_profile.id != profile.id:
             return Response({'success': False, 'message': 'Forbidden.'}, status=403)

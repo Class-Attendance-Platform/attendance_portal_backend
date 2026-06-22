@@ -41,6 +41,11 @@ class RegisterSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
     def validate(self, attrs):
+        if attrs.get("email"):
+            email = attrs["email"].lower().strip()
+            attrs["email"] = email
+            attrs["username"] = email
+
         role = attrs.get("role")
         if role == User.Role.STUDENT:
             if not attrs.get("student_id"):

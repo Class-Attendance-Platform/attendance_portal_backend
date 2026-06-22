@@ -15,7 +15,8 @@ class TeacherCoursesView(APIView):
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
-        teacher = get_object_or_404(TeacherProfile, id=uuid, user__deleted=False)
+        from django.db.models import Q
+        teacher = get_object_or_404(TeacherProfile, Q(id=uuid) | Q(user_id=uuid), user__deleted=False)
 
         all_cis = CourseInfo.objects.filter(
             teacher=teacher, deleted=False
@@ -70,6 +71,26 @@ class TeacherCourseInfoDetailView(APIView):
         memberships = ci.classroom.memberships.select_related("student__user")
         students = [m.student for m in memberships]
 
+        # Calculate attendance stats
+        logs = AttendanceLog.objects.filter(course_info=ci)
+        dates = logs.values_list('date', flat=True).distinct().order_by('-date')
+        total_classes = dates.count()
+
+        attendance_map = {}
+        for s in students:
+            present_count = logs.filter(student=s, status='PRESENT').count()
+            attendance_map[s.student_id] = present_count
+
+        history = []
+        for d in dates:
+            present_student_ids = list(
+                logs.filter(date=d, status='PRESENT').values_list('student__student_id', flat=True)
+            )
+            history.append({
+                'date': str(d),
+                'presentStudents': present_student_ids
+            })
+
         return Response(
             {
                 "success": True,
@@ -99,6 +120,12 @@ class TeacherCourseInfoDetailView(APIView):
                         "name": ci.classroom.name,
                     },
                     "students": StudentInClassroomSerializer(students, many=True).data,
+                    "attendance": {
+                        "id": str(ci.id),
+                        "totalClasses": total_classes,
+                        "attendanceMap": attendance_map,
+                        "history": history
+                    }
                 },
             }
         )
