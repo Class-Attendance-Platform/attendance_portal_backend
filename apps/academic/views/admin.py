@@ -36,7 +36,7 @@ class SemesterDetailView(APIView):
 
     def put(self, request, uuid):
         semester = get_object_or_404(Semester, id=uuid, deleted=False)
-        serializer = SemesterSerializer(semester, data=request.data)
+        serializer = SemesterSerializer(semester, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response({'success': True, 'semester': serializer.data})

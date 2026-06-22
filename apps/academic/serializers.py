@@ -5,7 +5,7 @@ from apps.users.models import StudentProfile, TeacherProfile
 
 class SemesterSerializer(serializers.ModelSerializer):
     students = serializers.ListField(child=serializers.UUIDField(), required=False, write_only=False)
-    courses = serializers.ListField(child=serializers.UUIDField(), required=False, write_only=False)
+    courses = serializers.ListField(required=False, write_only=False)
 
     class Meta:
         model = Semester
@@ -17,7 +17,7 @@ class SemesterSerializer(serializers.ModelSerializer):
         return [str(sid) for sid in student_ids]
 
     def get_courses(self, obj):
-        return [str(ci.id) for ci in obj.course_infos.all()]
+        return [str(ci.id) for ci in obj.course_infos.filter(deleted=False)]
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
@@ -65,12 +65,44 @@ class SemesterSerializer(serializers.ModelSerializer):
 
         # 2. Sync CourseInfos
         if course_info_ids is not None:
-            # First, CourseInfos that were pointing here but are no longer in the list:
-            # We dont delete CourseInfos, we just unbind them or leave them? 
-            # Actually, CourseInfo is tied to Semester. If it is removed from Semester, it should probably be deleted or moved.
-            # But the UI suggests we are selecting existing CourseInfos.
-            # Lets just update the semester FK for selected CourseInfos.
-            CourseInfo.objects.filter(id__in=course_info_ids).update(semester=semester)
+            classroom, _ = Classroom.objects.get_or_create(
+                semester=semester, 
+                name="Main",
+                defaults={"deleted": False}
+            )
+            
+            # Parse the incoming courses data (can be Course IDs or dicts of {course_id, teacher_id})
+            parsed_courses = []
+            for item in course_info_ids:
+                if isinstance(item, dict):
+                    cid = item.get('course_id') or item.get('course')
+                    tid = item.get('teacher_id') or item.get('teacher')
+                else:
+                    cid = item
+                    tid = None
+                if cid:
+                    parsed_courses.append((str(cid), str(tid) if tid else None))
+            
+            selected_course_ids = [c[0] for c in parsed_courses]
+            
+            # Soft-delete CourseInfos that were associated with this semester but are no longer in the list
+            CourseInfo.objects.filter(semester=semester).exclude(course_id__in=selected_course_ids).update(deleted=True)
+            # Update and restore/create selected CourseInfos
+            for cid, tid in parsed_courses:
+                ci = CourseInfo.objects.filter(semester=semester, course_id=cid).first()
+                if ci:
+                    ci.classroom = classroom
+                    ci.teacher_id = tid
+                    ci.deleted = False
+                    ci.save()
+                else:
+                    CourseInfo.objects.create(
+                        semester=semester,
+                        course_id=cid,
+                        teacher_id=tid,
+                        classroom=classroom,
+                        deleted=False
+                    )
 
 
 
@@ -98,10 +130,14 @@ class StudentInClassroomSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(source='user.first_name', read_only=True)
     last_name = serializers.CharField(source='user.last_name', read_only=True)
     email = serializers.EmailField(source='user.email', read_only=True)
+    userName = serializers.SerializerMethodField()
 
     class Meta:
         model = StudentProfile
-        fields = ['id', 'user_id', 'first_name', 'last_name', 'email', 'student_id', 'current_level', 'current_semester']
+        fields = ['id', 'user_id', 'first_name', 'last_name', 'email', 'student_id', 'current_level', 'current_semester', 'userName']
+
+    def get_userName(self, obj):
+        return obj.user.get_full_name() or obj.user.username
 
 
 class ClassroomStudentBulkSerializer(serializers.Serializer):
@@ -134,6 +170,19 @@ class CourseInfoSerializer(serializers.ModelSerializer):
             'name': obj.teacher.user.get_full_name(),
             'email': obj.teacher.user.email,
         }
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        ret['course'] = CourseSerializer(instance.course).data if instance.course else None
+        if instance.teacher:
+            ret['teacher'] = {
+                'id': str(instance.teacher.id),
+                'userName': instance.teacher.user.get_full_name(),
+                'email': instance.teacher.user.email,
+            }
+        else:
+            ret['teacher'] = None
+        return ret
 
 
 class PromoteStudentsSerializer(serializers.Serializer):
