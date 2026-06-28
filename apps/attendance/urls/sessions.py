@@ -6,6 +6,7 @@ from apps.attendance.views.sessions import (
     QROnlineCheckinView,
     ManualMarkView,
     CourseAttendanceHistoryView,
+    ActiveSessionView,
 )
 
 urlpatterns = [
@@ -22,4 +23,7 @@ urlpatterns = [
 
     # Course attendance history (teacher/admin)
     path('course-info/<uuid:uuid>/history/', CourseAttendanceHistoryView.as_view(), name='course-history'),
+
+    # Fetch active session for a course (student)
+    path('course-info/<uuid:uuid>/active/', ActiveSessionView.as_view(), name='active-session'),
 ]
