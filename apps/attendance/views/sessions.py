@@ -182,12 +182,14 @@ class QROnlineCheckinView(APIView):
 
         if not binding:
             # First time — create binding
-            # Reject if this MAC is already bound to someone else
+            # Reject if this MAC is already bound to another student
             if DeviceBinding.objects.filter(mac_address=mac, is_active=True).exists():
                 return Response({'success': False, 'message': 'This device is already bound to another student.'}, status=403)
             DeviceBinding.objects.create(student=student, mac_address=mac)
         elif binding.mac_address != mac:
-            return Response({'success': False, 'message': 'Device not registered for this student.'}, status=403)
+            # For web compatibility, just update the mac address instead of blocking
+            binding.mac_address = mac
+            binding.save()
 
         # Add to Redis session
         added = redis_service.add_submission(
@@ -267,3 +269,18 @@ class CourseAttendanceHistoryView(APIView):
                 for date, entries in sorted(grouped.items(), reverse=True)
             ],
         })
+
+class ActiveSessionView(APIView):
+    """Get active session details for a course to allow direct give attendance."""
+    permission_classes = [IsStudent]
+
+    def get(self, request, uuid):
+        session = AttendanceSession.objects.filter(course_info_id=uuid, is_active=True).first()
+        if session:
+            return Response({
+                'success': True, 
+                'session_id': str(session.id), 
+                'qr_token': session.qr_token
+            })
+        return Response({'success': False, 'message': 'No active session.'})
+
