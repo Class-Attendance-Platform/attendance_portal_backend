@@ -105,6 +105,7 @@ class UserMeSerializer(serializers.ModelSerializer):
             "id",
             "username",
             "email",
+            "userName",
             "first_name",
             "last_name",
             "role",
@@ -175,8 +176,8 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
 
 class StudentUpdateSerializer(serializers.ModelSerializer):
-    first_name = serializers.CharField(source="user.first_name", required=False)
-    last_name = serializers.CharField(source="user.last_name", required=False)
+    first_name = serializers.CharField(source="user.first_name", required=False, allow_blank=True)
+    last_name = serializers.CharField(source="user.last_name", required=False, allow_blank=True)
     faculty = serializers.CharField(source="user.faculty", required=False)
     department = serializers.CharField(source="user.department", required=False)
 
@@ -237,8 +238,8 @@ class TeacherProfileSerializer(serializers.ModelSerializer):
 
 
 class TeacherUpdateSerializer(serializers.ModelSerializer):
-    first_name = serializers.CharField(source="user.first_name", required=False)
-    last_name = serializers.CharField(source="user.last_name", required=False)
+    first_name = serializers.CharField(source="user.first_name", required=False, allow_blank=True)
+    last_name = serializers.CharField(source="user.last_name", required=False, allow_blank=True)
     faculty = serializers.CharField(source="user.faculty", required=False)
     department = serializers.CharField(source="user.department", required=False)
 
