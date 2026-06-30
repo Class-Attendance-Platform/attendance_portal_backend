@@ -29,8 +29,40 @@ class StartSessionView(APIView):
         data = serializer.validated_data
         ci = get_object_or_404(CourseInfo, id=data['course_info_id'], deleted=False)
 
-        if AttendanceSession.objects.filter(course_info=ci, is_active=True).exists():
-            return Response({'success': False, 'message': 'A session is already active for this course.'}, status=400)
+        # Stop and finalize any existing active sessions for this course to prevent duplicates/errors
+        active_sessions = AttendanceSession.objects.filter(course_info=ci, is_active=True)
+        for act_sess in active_sessions:
+            submissions = redis_service.get_submissions(str(act_sess.id))
+            redis_service.delete_session_cache(str(act_sess.id))
+
+            act_sess.is_active = False
+            act_sess.ended_at = timezone.now()
+            act_sess.save()
+
+            if submissions:
+                commit_session_to_db(act_sess, submissions)
+            else:
+                # Redis expired — fill ABSENT for anyone not already logged
+                from apps.attendance.models import AttendanceLog as AL
+                from apps.academic.models import StudentClassroom
+                enrolled = StudentClassroom.objects.filter(
+                    classroom=act_sess.course_info.classroom
+                ).select_related('student')
+                already_logged = set(
+                    AL.objects.filter(session=act_sess).values_list('student_id', flat=True)
+                )
+                logs_to_create = []
+                for membership in enrolled:
+                    if membership.student.id not in already_logged:
+                        logs_to_create.append(AL(
+                            session=act_sess,
+                            course_info=act_sess.course_info,
+                            student=membership.student,
+                            date=act_sess.date,
+                            status=AL.Status.ABSENT,
+                            source=act_sess.mode,
+                        ))
+                AL.objects.bulk_create(logs_to_create, ignore_conflicts=True)
 
         qr_token = None
         if data['mode'] in (AttendanceSession.Mode.QR_ONLINE, AttendanceSession.Mode.QR_OFFLINE):
