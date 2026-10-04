@@ -1,26 +1,35 @@
+from collections import defaultdict
+
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
-from rest_framework import status
+from django.utils.dateparse import parse_date
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.academic.models import CourseInfo, Semester
-from apps.academic.serializers import CourseInfoSerializer, StudentInClassroomSerializer
-from apps.attendance.models import AttendanceLog
-from apps.users.models import StudentProfile, TeacherProfile
-from apps.users.permissions import IsAdminOrTeacher, IsTeacher
+from apps.academic.models import CourseInfo
+from apps.academic.serializers import StudentInClassroomSerializer
+from apps.attendance.models import AttendanceLog, AttendanceSession
+from apps.attendance.services import finalize_ended_sessions, finalize_expired_sessions
+from apps.users.models import TeacherProfile
+from apps.users.permissions import IsAdminOrTeacher, can_manage_course, not_your_course_response
 
 
 class TeacherCoursesView(APIView):
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
-        from django.db.models import Q
         teacher = get_object_or_404(TeacherProfile, Q(id=uuid) | Q(user_id=uuid), user__deleted=False)
+        if request.user.role == "TEACHER" and teacher.user_id != request.user.id:
+            return Response(
+                {"success": False, "message": "You can only view your own courses."}, status=403
+            )
 
         all_cis = CourseInfo.objects.filter(
             teacher=teacher, deleted=False
         ).select_related("course", "semester", "classroom")
+
+        # Save any of this teacher's sessions whose timer ran out (e.g. tab was closed)
+        finalize_ended_sessions(AttendanceSession.objects.filter(course_info__teacher=teacher))
 
         # Split active vs previous semesters
         current = [ci for ci in all_cis if ci.semester.is_active]
@@ -66,30 +75,33 @@ class TeacherCourseInfoDetailView(APIView):
             id=uuid,
             deleted=False,
         )
+        if not can_manage_course(request.user, ci):
+            return not_your_course_response()
+
+        finalize_expired_sessions(ci)
 
         # Get enrolled students via classroom
         memberships = ci.classroom.memberships.select_related("student__user")
         students = [m.student for m in memberships]
 
-        # Calculate attendance stats
+        # Calculate attendance stats (a fixed number of queries, whatever the class size)
         logs = AttendanceLog.objects.filter(course_info=ci)
-        dates = logs.values_list('date', flat=True).distinct().order_by('-date')
-        total_classes = dates.count()
+        present_logs = logs.filter(status='PRESENT')
+        dates = list(logs.values_list('date', flat=True).distinct().order_by('-date'))
+        total_classes = len(dates)
 
-        attendance_map = {}
-        for s in students:
-            present_count = logs.filter(student=s, status='PRESENT').count()
-            attendance_map[s.student_id] = present_count
+        present_counts = dict(
+            present_logs.order_by().values_list('student__student_id').annotate(n=Count('id'))
+        )
+        attendance_map = {s.student_id: present_counts.get(s.student_id, 0) for s in students}
 
-        history = []
-        for d in dates:
-            present_student_ids = list(
-                logs.filter(date=d, status='PRESENT').values_list('student__student_id', flat=True)
-            )
-            history.append({
-                'date': str(d),
-                'presentStudents': present_student_ids
-            })
+        present_by_date = defaultdict(list)
+        for d, sid in present_logs.order_by('student__student_id').values_list('date', 'student__student_id'):
+            present_by_date[d].append(sid)
+        history = [
+            {'date': str(d), 'presentStudents': present_by_date.get(d, [])}
+            for d in dates
+        ]
 
         return Response(
             {
@@ -142,14 +154,24 @@ class TeacherHistorySessionView(APIView):
     def post(self, request, uuid):
         """Save/Update bulk manual attendance for a date."""
         ci = get_object_or_404(CourseInfo, id=uuid, deleted=False)
-        date_str = request.data.get("date")
-        present_student_ids = request.data.get(
-            "presentStudentIds", []
-        )  # These are numeric IDs from frontend
+        if not can_manage_course(request.user, ci):
+            return not_your_course_response()
 
+        date_str = request.data.get("date")
         if not date_str:
             return Response(
                 {"success": False, "message": "Date is required."}, status=400
+            )
+        try:
+            day = parse_date(str(date_str))  # also accepts e.g. 2026-10-4
+            # Numeric student IDs from the frontend (numbers or numeric strings)
+            present_student_ids = {int(x) for x in request.data.get("presentStudentIds", [])}
+        except (TypeError, ValueError):
+            day = None
+        if day is None:
+            return Response(
+                {"success": False, "message": "Use a YYYY-MM-DD date and numeric student IDs."},
+                status=400,
             )
 
         # 1. Get all student profiles in this classroom
@@ -158,7 +180,7 @@ class TeacherHistorySessionView(APIView):
         all_student_map = {s.student_id: s for s in all_students}
 
         # 2. Clear existing manual logs for this date/course to avoid duplicates
-        AttendanceLog.objects.filter(course_info=ci, date=date_str).delete()
+        AttendanceLog.objects.filter(course_info=ci, date=day).delete()
 
         # 3. Create new logs
         logs_to_create = []
@@ -168,7 +190,7 @@ class TeacherHistorySessionView(APIView):
                 AttendanceLog(
                     course_info=ci,
                     student=profile,
-                    date=date_str,
+                    date=day,
                     status="PRESENT" if is_present else "ABSENT",
                     source="MANUAL",
                     is_modified_by_teacher=True,
@@ -180,13 +202,15 @@ class TeacherHistorySessionView(APIView):
         return Response(
             {
                 "success": True,
-                "message": f"Attendance for {date_str} saved successfully.",
+                "message": f"Attendance for {day} saved successfully.",
             }
         )
 
     def delete(self, request, uuid, date):
         """Delete all attendance logs for a specific date and course."""
         ci = get_object_or_404(CourseInfo, id=uuid, deleted=False)
+        if not can_manage_course(request.user, ci):
+            return not_your_course_response()
         deleted_count, _ = AttendanceLog.objects.filter(
             course_info=ci, date=date
         ).delete()

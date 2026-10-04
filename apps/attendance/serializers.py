@@ -15,7 +15,8 @@ class ManualMarkSerializer(serializers.Serializer):
 
 
 class QRCheckinSerializer(serializers.Serializer):
-    student_id  = serializers.IntegerField()      # numeric student_id e.g. 2302001
+    # Optional: the logged-in student is used; if sent, it must be their own id.
+    student_id  = serializers.IntegerField(required=False)  # numeric student_id e.g. 2302001
     mac_address = serializers.CharField(max_length=17)
     qr_token    = serializers.CharField()
 
