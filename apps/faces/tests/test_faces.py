@@ -285,3 +285,85 @@ class RealEngineSmokeTests(TestCase):
         engine = InsightFaceOnnxEngine(settings.FACE_MODEL_DIR)
         self.assertEqual(engine.analyze(np.full((480, 640, 3), 128, dtype=np.uint8)), [])
         self.assertEqual(len(embedding_to_bytes(person(1))), 2048)
+
+
+class ReviewFixTests(FaceTestCase):
+    """Cases found in review: same-photo faces, look-alikes, big images, deletes, redo."""
+
+    def setUp(self):
+        super().setUp()
+        self.teacher = make_teacher('teacher@example.com')
+        self.a = make_student('a@example.com', 2302001)
+        self.b = make_student('b@example.com', 2302002)
+        self.ci = make_course_info(self.teacher, students=[self.a, self.b])
+        self.register_ok(self.a, 1)
+        self.register_ok(self.b, 2)
+        self.client = client_for(self.teacher.user)
+
+    def recognize(self, *photos):
+        res = self.client.post('/api/faces/recognize/', {
+            'course_info_id': str(self.ci.id), 'photos': list(photos),
+        }, format='multipart')
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.data, {row['student_id']: row for row in res.data['students']}
+
+    def test_second_face_in_same_photo_goes_to_next_candidate(self):
+        # A blurry B: about 0.42 like A, 0.38 like B (the rest is noise)
+        weak_b = 0.42 * person(1) + 0.38 * person(2) + np.sqrt(1 - 0.42**2 - 0.38**2) * person(300)
+        data, rows = self.recognize(self.photo(face(person(1, 0.1, 21)), face(weak_b, x=150)))
+        self.assertEqual(rows[2302001]['status'], 'present')
+        self.assertEqual((rows[2302002]['status'], rows[2302002]['reason']), ('unsure', 'low_match'))
+        self.assertEqual(data['unknown_faces'], [])
+
+    def test_same_student_in_two_photos_is_not_given_to_a_lookalike(self):
+        lookalike_view = blend(1, 2, 0.45)  # A again, also fairly close to B
+        data, rows = self.recognize(self.photo(face(person(1, 0.1, 22))), self.photo(face(lookalike_view)))
+        self.assertEqual(rows[2302001]['status'], 'present')
+        self.assertEqual(rows[2302002]['status'], 'absent')
+
+    def test_huge_image_is_refused_before_decoding(self):
+        image = Image.new('L', (7100, 7100))
+        data = io.BytesIO()
+        image.save(data, format='PNG')
+        res = self.client.post('/api/faces/recognize/', {
+            'course_info_id': str(self.ci.id),
+            'photos': [SimpleUploadedFile('big.png', data.getvalue(), content_type='image/png')],
+        }, format='multipart')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('too large', res.data['message'])
+
+    def test_redo_on_the_same_day_replaces_the_earlier_face_result(self):
+        confirm = lambda ids: self.client.post('/api/faces/confirm/', {
+            'course_info_id': str(self.ci.id), 'present_student_ids': ids, 'date': '2026-10-05',
+        }, format='json')
+        self.assertEqual(confirm([str(self.a.id), str(self.b.id)]).status_code, 201)
+        self.assertEqual(confirm([str(self.a.id)]).status_code, 201)
+        self.assertEqual(AttendanceSession.objects.filter(mode='FACE').count(), 1)
+        statuses = dict(AttendanceLog.objects.values_list('student__student_id', 'status'))
+        self.assertEqual(statuses, {2302001: 'PRESENT', 2302002: 'ABSENT'})
+
+    def test_deleting_a_student_removes_their_face_and_frees_it(self):
+        admin = client_for(make_admin('admin@example.com'))
+        self.assertEqual(admin.delete(f'/api/admin/students/{self.a.id}/').status_code, 200)
+        self.assertFalse(StudentFace.objects.filter(student=self.a).exists())
+        newcomer = make_student('c@example.com', 2302003)
+        self.register_ok(newcomer, 1)  # same face, new account: allowed
+
+    def test_damaged_model_files_mean_not_set_up(self):
+        from apps.faces import engines
+        with mock.patch.object(engines, '_engine', None), \
+                mock.patch('apps.faces.engines.insightface_onnx.InsightFaceOnnxEngine', side_effect=RuntimeError('bad protobuf')):
+            with self.assertRaises(FaceEngineUnavailable):
+                engines.get_engine()
+
+
+class ReadImageTests(TestCase):
+    def test_phone_rotation_is_applied(self):
+        from apps.faces.services import read_image
+        image = Image.new('RGB', (200, 100), (10, 20, 30))
+        exif = image.getexif()
+        exif[0x0112] = 6  # "rotate 90°" as phones write it
+        data = io.BytesIO()
+        image.save(data, format='JPEG', exif=exif)
+        result = read_image(SimpleUploadedFile('p.jpg', data.getvalue()))
+        self.assertEqual(result.shape[:2], (200, 100))  # now portrait

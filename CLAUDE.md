@@ -80,7 +80,8 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - Teacher-facing course endpoints must check `can_manage_course` and return `not_your_course_response()`.
 - Times: use `timezone.localdate()` / `timezone.localtime()` (TIME_ZONE is Asia/Dhaka).
 - One class = one date: stats, student summary and exports count a student present on a date if any
-  session that day marked them present (several sessions per day are possible).
+  session that day marked them present (several sessions per day are possible). Saving face attendance
+  again for the same course and date replaces that date's earlier FACE session.
 
 ## Next
 Tune face thresholds with real classroom photos. Azure Face can be added as another engine in

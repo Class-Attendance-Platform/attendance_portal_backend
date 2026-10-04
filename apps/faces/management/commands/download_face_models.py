@@ -55,6 +55,8 @@ class Command(BaseCommand):
             if not zip_path.is_file():
                 raise CommandError(f'File not found: {zip_path}')
 
+            if not zipfile.is_zipfile(zip_path):
+                raise CommandError(f'{zip_path} is not a valid zip file. Download it again.')
             with zipfile.ZipFile(zip_path) as pack:
                 names = {Path(n).name: n for n in pack.namelist()}
                 for name, digest in FILES.items():

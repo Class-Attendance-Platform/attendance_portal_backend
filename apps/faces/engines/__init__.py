@@ -35,9 +35,16 @@ def get_engine():
             name = settings.FACE_ENGINE
             if name == 'insightface':
                 from .insightface_onnx import InsightFaceOnnxEngine
-                _engine = InsightFaceOnnxEngine(
-                    settings.FACE_MODEL_DIR, det_threshold=settings.FACE_DETECTION_THRESHOLD
-                )
+                try:
+                    _engine = InsightFaceOnnxEngine(
+                        settings.FACE_MODEL_DIR, det_threshold=settings.FACE_DETECTION_THRESHOLD
+                    )
+                except FaceEngineUnavailable:
+                    raise
+                except Exception as e:  # e.g. a damaged model file
+                    raise FaceEngineUnavailable(
+                        f'Could not load the face models ({e}). Run: python manage.py download_face_models'
+                    ) from e
             else:
                 raise FaceEngineUnavailable(f'Unknown FACE_ENGINE "{name}".')
         return _engine

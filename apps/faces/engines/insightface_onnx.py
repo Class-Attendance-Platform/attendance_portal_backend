@@ -114,11 +114,13 @@ class InsightFaceOnnxEngine:
 
     def _anchor_centers(self, rows, cols, stride):
         key = (rows, cols, stride)
-        if key not in self._centers:
+        centers = self._centers.get(key)
+        if centers is None:
             grid = np.stack(np.mgrid[:rows, :cols][::-1], axis=-1).astype(np.float32)
-            centers = (grid * stride).reshape(-1, 2)
-            self._centers[key] = np.repeat(centers, ANCHORS_PER_CELL, axis=0)
-        return self._centers[key]
+            centers = np.repeat((grid * stride).reshape(-1, 2), ANCHORS_PER_CELL, axis=0)
+            if len(self._centers) < 100:  # photo sizes vary; keep the cache small
+                self._centers[key] = centers
+        return centers
 
     def _nms(self, boxes, scores):
         x1, y1, x2, y2 = boxes.T
