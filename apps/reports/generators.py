@@ -31,13 +31,15 @@ def _get_report_data(course_info, filter_date=None):
         logs_qs = logs_qs.filter(date=filter_date)
 
     # Build lookup: { student_id: { date_str: status } }
+    # One class = one date: with several sessions that day, the best status wins.
+    rank = {'PRESENT': 2, 'LATE': 1, 'ABSENT': 0}
     logs_by_student = {}
     all_dates = sorted({str(log.date) for log in logs_qs})
     for log in logs_qs:
-        sid = log.student.student_id
-        if sid not in logs_by_student:
-            logs_by_student[sid] = {}
-        logs_by_student[sid][str(log.date)] = log.status
+        day_status = logs_by_student.setdefault(log.student.student_id, {})
+        current = day_status.get(str(log.date))
+        if current is None or rank.get(log.status, 0) > rank.get(current, 0):
+            day_status[str(log.date)] = log.status
 
     return students, logs_by_student, all_dates
 

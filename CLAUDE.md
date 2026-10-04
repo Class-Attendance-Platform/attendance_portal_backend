@@ -34,6 +34,9 @@ python manage.py makemigrations --check --dry-run --settings=config.settings.tes
 python manage.py migrate --settings=config.settings.test
 python manage.py seed_local_demo --settings=config.settings.test --apply   # password: Demo-pass-2026
 python manage.py runserver --settings=config.settings.test
+# Face attendance models (once, ~290 MB download, ~180 MB kept in face_models/, gitignored):
+python manage.py download_face_models                    # or --zip <path to buffalo_l.zip>
+python manage.py check_face_engine <photo.jpg> --settings=config.settings.test
 ```
 Demo logins: `admin@demo.local`, `teacher@demo.local`, `student2302001@demo.local` (…002, …003).
 Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
@@ -60,6 +63,14 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   - Students can only check in for themselves, only if enrolled; teachers can only mark enrolled students.
 - `apps/hardware/` ESP32 fingerprint devices (`X-Hardware-Key` header auth), enrolment requests.
 - `apps/reports/` export csv/xlsx/pdf/docx (`generators.py`).
+- `apps/faces/` face attendance (`/api/faces/`). `engines/`: `get_engine()` picks `settings.FACE_ENGINE`;
+  `insightface_onnx.py` runs InsightFace buffalo_l (SCRFD detector + ArcFace) with onnxruntime + OpenCV
+  (no `insightface` package). `services.py`: `register_student_faces` (3 poses, one face each, same person,
+  duplicate-face block → 409), `recognize_class` (1–3 photos, only enrolled students compared, one face per
+  student; present ≥ `FACE_MATCH_THRESHOLD`, unsure ≥ `FACE_UNSURE_THRESHOLD`, `no_face` → unsure; nothing
+  saved), `save_face_attendance` (finished FACE session + logs). `StudentFace` keeps a 112px crop + 512-float
+  embedding per pose; class photos are never stored. Thresholds are settings (tunable via env). Models are
+  non-commercial/academic use only. Tests use a fake engine (`apps/faces/tests/test_faces.py`).
 - `offline_server/` separate FastAPI app for offline QR on the teacher's laptop (calls this API).
 - Tests: `apps/*/tests/`; factories in `apps/attendance/tests/helpers.py`.
 
@@ -68,9 +79,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - Frontend expects some camelCase keys (`userName`, `attendanceMap`, `presentStudents`): don't rename.
 - Teacher-facing course endpoints must check `can_manage_course` and return `not_your_course_response()`.
 - Times: use `timezone.localdate()` / `timezone.localtime()` (TIME_ZONE is Asia/Dhaka).
+- One class = one date: stats, student summary and exports count a student present on a date if any
+  session that day marked them present (several sessions per day are possible).
 
-## Planned next (Phase 2, needs its own "Go")
-Face attendance with InsightFace models run through onnxruntime + opencv (no `insightface` package, for
-easy Windows install), behind a switchable engine so Azure Face can replace it if Microsoft approves
-access. Chosen UI: mockup option C (checklist registration, roster review), optional face step at sign-up,
-3 guided shots, store face crops + embeddings, block duplicate faces.
+## Next
+Tune face thresholds with real classroom photos. Azure Face can be added as another engine in
+`apps/faces/engines/` if Microsoft approves identification access (currently not approved).

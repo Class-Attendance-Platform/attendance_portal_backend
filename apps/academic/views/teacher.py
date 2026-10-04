@@ -84,19 +84,23 @@ class TeacherCourseInfoDetailView(APIView):
         memberships = ci.classroom.memberships.select_related("student__user")
         students = [m.student for m in memberships]
 
-        # Calculate attendance stats (a fixed number of queries, whatever the class size)
+        # Calculate attendance stats (a fixed number of queries, whatever the class size).
+        # One class = one date: a student present in any session that day counts once.
         logs = AttendanceLog.objects.filter(course_info=ci)
         present_logs = logs.filter(status='PRESENT')
         dates = list(logs.values_list('date', flat=True).distinct().order_by('-date'))
         total_classes = len(dates)
 
         present_counts = dict(
-            present_logs.order_by().values_list('student__student_id').annotate(n=Count('id'))
+            present_logs.order_by().values_list('student__student_id').annotate(n=Count('date', distinct=True))
         )
         attendance_map = {s.student_id: present_counts.get(s.student_id, 0) for s in students}
 
         present_by_date = defaultdict(list)
-        for d, sid in present_logs.order_by('student__student_id').values_list('date', 'student__student_id'):
+        present_pairs = present_logs.order_by('date', 'student__student_id').values_list(
+            'date', 'student__student_id'
+        ).distinct()
+        for d, sid in present_pairs:
             present_by_date[d].append(sid)
         history = [
             {'date': str(d), 'presentStudents': present_by_date.get(d, [])}

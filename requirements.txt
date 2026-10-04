@@ -16,3 +16,6 @@ celery>=5.3
 qrcode[pil]>=7.4
 gunicorn>=21.2
 whitenoise>=6.6
+numpy>=1.26
+opencv-python-headless>=4.8
+onnxruntime>=1.17
