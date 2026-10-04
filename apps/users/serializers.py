@@ -47,6 +47,11 @@ class RegisterSerializer(serializers.ModelSerializer):
             attrs["username"] = email
 
         role = attrs.get("role")
+        if role == User.Role.ADMIN:
+            # Admins are created with `manage.py createsuperuser`, never by sign-up.
+            raise serializers.ValidationError(
+                {"role": "Admin accounts cannot be created here."}
+            )
         if role == User.Role.STUDENT:
             if not attrs.get("student_id"):
                 raise serializers.ValidationError(

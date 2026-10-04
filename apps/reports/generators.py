@@ -26,7 +26,7 @@ def _get_report_data(course_info, filter_date=None):
     students = [m.student for m in memberships]
 
     # Fetch logs
-    logs_qs = AttendanceLog.objects.filter(course_info=course_info).order_by('date')
+    logs_qs = AttendanceLog.objects.filter(course_info=course_info).select_related('student').order_by('date')
     if filter_date:
         logs_qs = logs_qs.filter(date=filter_date)
 

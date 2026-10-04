@@ -2,8 +2,9 @@ from django.shortcuts import get_object_or_404
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from apps.users.permissions import IsAdminOrTeacher
+from apps.users.permissions import IsAdminOrTeacher, can_manage_course, not_your_course_response
 from apps.academic.models import CourseInfo
+from apps.attendance.services import finalize_expired_sessions
 from apps.reports.generators import export_csv, export_xlsx, export_pdf, export_docx
 
 
@@ -12,6 +13,8 @@ class ExportReportView(APIView):
 
     def get(self, request, uuid):
         ci = get_object_or_404(CourseInfo, id=uuid, deleted=False)
+        if not can_manage_course(request.user, ci):
+            return not_your_course_response()
 
         fmt = request.query_params.get('export_format', 'xlsx').lower().strip()
         if fmt not in ('csv', 'xlsx', 'pdf', 'docx'):
@@ -31,6 +34,8 @@ class ExportReportView(APIView):
                     {'success': False, 'message': 'Invalid date format. Use YYYY-MM-DD.'},
                     status=400
                 )
+
+        finalize_expired_sessions(ci)
 
         generators = {
             'csv':  export_csv,
