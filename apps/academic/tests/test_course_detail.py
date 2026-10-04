@@ -52,3 +52,41 @@ class RollCallSaveTests(TestCase):
             'date': 'yesterday', 'presentStudentIds': [],
         }, format='json')
         self.assertEqual(res.status_code, 400)
+
+
+class SeveralSessionsOneDayTests(TestCase):
+    """Two attendance sessions on one date count as one class."""
+
+    def setUp(self):
+        from apps.attendance.models import AttendanceSession
+        self.teacher = make_teacher('teacher@example.com')
+        self.a = make_student('a@example.com', 2302001)
+        self.b = make_student('b@example.com', 2302002)
+        self.ci = make_course_info(self.teacher, students=[self.a, self.b])
+        day = datetime.date(2026, 10, 5)
+        for mode, statuses in [('QR_ONLINE', ('PRESENT', 'ABSENT')), ('FACE', ('PRESENT', 'PRESENT'))]:
+            session = AttendanceSession.objects.create(
+                course_info=self.ci, date=day, mode=mode, is_active=False,
+            )
+            for student, status in zip((self.a, self.b), statuses):
+                AttendanceLog.objects.create(
+                    session=session, course_info=self.ci, student=student, date=day, status=status,
+                )
+
+    def test_teacher_course_detail(self):
+        attendance = client_for(self.teacher.user).get(f'/api/teacher/course-info/{self.ci.id}/').data['courseInfo']['attendance']
+        self.assertEqual(attendance['totalClasses'], 1)
+        self.assertEqual(attendance['attendanceMap'], {2302001: 1, 2302002: 1})
+        self.assertEqual(attendance['history'], [{'date': '2026-10-05', 'presentStudents': [2302001, 2302002]}])
+
+    def test_student_summary(self):
+        res = client_for(self.b.user).get(f'/api/student/{self.b.id}/semesters/')
+        course = res.data['semesters'][0]['courses'][0]
+        self.assertEqual((course['totalClasses'], course['presentCount'], course['percentage']), (1, 1, 100.0))
+        self.assertEqual(course['history'], [{'date': '2026-10-05', 'present': True}])
+
+    def test_export(self):
+        res = client_for(self.teacher.user).get(f'/api/reports/course-info/{self.ci.id}/export/?export_format=csv')
+        rows = res.content.decode().splitlines()
+        self.assertIn('2302002', rows[2])
+        self.assertTrue(rows[2].endswith('PRESENT,1,1,100.0%'), rows[2])

@@ -18,6 +18,7 @@ SOURCE_FOR_MODE = {
     AttendanceSession.Mode.FINGERPRINT: AttendanceLog.Source.HARDWARE,
     AttendanceSession.Mode.QR_ONLINE: AttendanceLog.Source.QR_ONLINE,
     AttendanceSession.Mode.QR_OFFLINE: AttendanceLog.Source.QR_OFFLINE,
+    AttendanceSession.Mode.FACE: AttendanceLog.Source.FACE,
 }
 
 
@@ -121,15 +122,20 @@ def get_student_attendance_summary(student_profile):
             logs = AttendanceLog.objects.filter(
                 course_info=ci,
                 student=student_profile,
-            ).order_by('date')
+            )
 
-            total = logs.count()
-            present = logs.filter(status=AttendanceLog.Status.PRESENT).count()
+            # One class = one date: present if present in any session that day.
+            dates = sorted(set(logs.values_list('date', flat=True)))
+            present_dates = set(
+                logs.filter(status=AttendanceLog.Status.PRESENT).values_list('date', flat=True)
+            )
+            total = len(dates)
+            present = len(present_dates)
             percentage = round((present / total * 100), 2) if total > 0 else 0.0
 
             history = [
-                {'date': str(log.date), 'present': log.status == 'PRESENT'}
-                for log in logs
+                {'date': str(day), 'present': day in present_dates}
+                for day in dates
             ]
 
             courses_data.append({

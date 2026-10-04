@@ -4,7 +4,10 @@ from .models import AttendanceSession, AttendanceLog
 
 class StartSessionSerializer(serializers.Serializer):
     course_info_id   = serializers.UUIDField()
-    mode             = serializers.ChoiceField(choices=AttendanceSession.Mode.choices)
+    # Live sessions only; face attendance is saved through /api/faces/confirm/
+    mode             = serializers.ChoiceField(
+        choices=[c for c in AttendanceSession.Mode.choices if c[0] != AttendanceSession.Mode.FACE]
+    )
     duration_seconds = serializers.IntegerField(min_value=30, max_value=7200, default=300)
 
 
