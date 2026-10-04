@@ -20,6 +20,7 @@ from apps.faces.models import StudentFace
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_SIDE = 3000          # larger photos are shrunk first (memory and speed)
+MAX_IMAGE_PIXELS = 50_000_000  # refuse bigger images before decoding them (memory)
 SELFIE_MAX_SIDE = 640
 MIN_FACE_PIXELS = 60           # registration: face must be at least this wide
 POSE_LABELS = {'STRAIGHT': 'straight', 'LEFT': 'left', 'RIGHT': 'right'}
@@ -41,10 +42,14 @@ def read_image(upload, label='photo') -> np.ndarray:
     if upload.size > MAX_UPLOAD_BYTES:
         raise FaceError(f'The {label} is too large (10 MB at most).')
     try:
-        image = ImageOps.exif_transpose(Image.open(io.BytesIO(upload.read()))).convert('RGB')
+        image = Image.open(io.BytesIO(upload.read()))  # reads only the header so far
+        if image.width * image.height > MAX_IMAGE_PIXELS:
+            raise FaceError(f'The {label} is too large. Please use a normal camera photo.')
+        image.draft('RGB', (MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))  # JPEG: decode at a smaller size
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+        image = ImageOps.exif_transpose(image).convert('RGB')
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError):
         raise FaceError(f'Could not read the {label}. Please use a JPG or PNG image.')
-    image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
     return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
 
 
@@ -109,7 +114,9 @@ def register_student_faces(student, uploads: dict) -> dict:
         raise FaceError("The 3 photos don't look like the same person. Please try again.")
 
     # Is this face already registered to another student?
-    others = StudentFace.objects.exclude(student=student).values_list('embedding', flat=True)
+    others = StudentFace.objects.exclude(student=student).filter(
+        student__user__deleted=False,
+    ).values_list('embedding', flat=True)
     if others:
         gallery = np.stack([embedding_from_bytes(e) for e in others])
         if float((gallery @ vectors.T).max()) >= settings.FACE_DUPLICATE_THRESHOLD:
@@ -167,23 +174,31 @@ def recognize_class(course_info, uploads: list) -> dict:
         for col, student_index in enumerate(owner):
             scores[:, student_index] = np.maximum(scores[:, student_index], sims[:, col])
 
-    # Give each face at most one student, most confident faces first. A face whose
-    # best student is already taken is usually the same person in another photo.
+    # Give each face at most one student, most confident faces first.
     low, high = settings.FACE_UNSURE_THRESHOLD, settings.FACE_MATCH_THRESHOLD
     match = {}         # student index -> (score, detection index)
     unknown = []
     order = sorted(range(len(detections)), key=lambda f: -scores[f].max() if students else 0)
     for f in order:
-        ranked = np.argsort(-scores[f]) if students else []
-        if not len(ranked) or scores[f, ranked[0]] < low:
+        photo = detections[f][0]
+        candidates = [int(s) for s in np.argsort(-scores[f]) if scores[f, s] >= low] if students else []
+        if not candidates:
             unknown.append(f)
             continue
-        best = int(ranked[0])
+        best = candidates[0]
         if best not in match:
             match[best] = (float(scores[f, best]), f)
-        elif len(ranked) > 1 and scores[f, ranked[1]] >= high and int(ranked[1]) not in match:
-            match[int(ranked[1])] = (float(scores[f, ranked[1]]), f)
-        # else: same person seen twice, ignore this face
+        elif detections[match[best][1]][0] != photo:
+            # The best student was already found in another photo: almost always the
+            # same person photographed twice, so this face adds nothing.
+            continue
+        else:
+            # Two faces in one photo are two people: try this face's next candidates.
+            free = [s for s in candidates[1:] if s not in match]
+            if free:
+                match[free[0]] = (float(scores[f, free[0]]), f)
+            else:
+                unknown.append(f)
 
     def face_info(f):
         photo_index, face = detections[f]
@@ -235,10 +250,15 @@ def save_face_attendance(course_info, present_ids, day=None) -> AttendanceSessio
         raise FaceError('Some selected students are not in this course.')
 
     now = timezone.now()
+    day = day or timezone.localdate()
     with transaction.atomic():
+        # Taking face attendance again the same day replaces the earlier face result.
+        AttendanceSession.objects.filter(
+            course_info=course_info, date=day, mode=AttendanceSession.Mode.FACE,
+        ).delete()
         session = AttendanceSession.objects.create(
             course_info=course_info,
-            date=day or timezone.localdate(),
+            date=day,
             mode=AttendanceSession.Mode.FACE,
             is_active=False,
             ended_at=now,

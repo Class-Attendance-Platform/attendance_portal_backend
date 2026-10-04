@@ -80,6 +80,7 @@ class AdminStudentDetailView(APIView):
         profile.user.deleted = True
         profile.user.is_active = False
         profile.user.save()
+        profile.faces.all().delete()  # biometric data goes with the account
         return Response({'success': True, 'message': 'Student deleted.'})
 
 
