@@ -175,6 +175,8 @@ PASSWORD_RESET_TIMEOUT = 60 * 60 * 24  # reset links work for 1 day
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True  # Tighten in production
+# The web app runs on another origin: let it read the file name of downloads (exports).
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
 
 # ── Face attendance ───────────────────────────────────────────────────────────
 # Engine "insightface" = InsightFace buffalo_l models via onnxruntime

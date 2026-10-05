@@ -159,6 +159,13 @@ class ExportEndpointTests(ExportTestCase):
             self.assertEqual(res['Content-Type'], content_type)
             self.assertIn(f'CSE301_attendance_full.{fmt}', res['Content-Disposition'])
 
+    def test_web_app_on_another_origin_can_read_the_file_name(self):
+        res = self.client.get(
+            f'/api/reports/course-info/{self.ci.id}/export/?format=pdf', HTTP_ORIGIN='https://web.example.com',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('content-disposition', res['Access-Control-Expose-Headers'].lower())
+
     def test_old_export_format_parameter_still_works(self):
         res = self.export('export_format=pdf')
         self.assertEqual(res['Content-Type'], 'application/pdf')
