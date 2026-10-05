@@ -18,8 +18,9 @@ RuntimeDirectoryMode=0750
 # 2 workers x 4 threads. Each worker loads the face models once (~0.5 GB RAM).
 # Timeout 120 s: recognising 3 large class photos can take a while.
 # umask 007: the socket is usable by the service and nginx only.
+# --no-control-socket: gunicorn's optional admin socket would go in the user's home (it has none).
 ExecStart=/var/www/attendanceportal-backend/venv/bin/gunicorn config.wsgi:application \
-    --bind unix:/run/attendanceportal-api/gunicorn.sock --umask 007 \
+    --bind unix:/run/attendanceportal-api/gunicorn.sock --umask 007 --no-control-socket \
     --workers 2 --threads 4 --timeout 120 \
     --access-logfile - --error-logfile -
 Restart=always
