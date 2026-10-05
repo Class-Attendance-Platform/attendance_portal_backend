@@ -29,8 +29,25 @@ class IPRateThrottle(FailOpenMixin, SimpleRateThrottle):
         return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
 
 
-class LoginThrottle(IPRateThrottle):
+class IPAndEmailRateThrottle(IPRateThrottle):
+    """
+    Counts per visitor IP *and* the email in the request body. A whole class signs in from one
+    campus IP at the start of a lesson, so a per-IP count alone would lock them out; per email it
+    still stops password guessing on one account.
+    """
+
+    def get_cache_key(self, request, view):
+        email = str(request.data.get('email', '') if hasattr(request, 'data') else '').strip().lower()
+        return self.cache_format % {'scope': self.scope, 'ident': f'{self.get_ident(request)}:{email}'}
+
+
+class LoginThrottle(IPAndEmailRateThrottle):
     scope = 'login'
+
+
+class LoginIPThrottle(IPRateThrottle):
+    """A wide cap per IP on top, against trying many accounts from one address."""
+    scope = 'login_ip'
 
 
 class RegisterThrottle(IPRateThrottle):

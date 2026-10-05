@@ -26,8 +26,8 @@ hardware hidden, one date = one class.
   ids are UUIDs and are named `id`, `user_id`, `profile_id`, `course_info_id`, `session_id`.
 - Lists the admin pages show are returned whole (one department is small: hundreds of rows). Search
   and filters run on the server with query parameters where listed.
-- Throttles (DRF, per IP unless noted): login 10/min, register 5/hour, password forgot 5/hour,
-  check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
+- Throttles (DRF): login 10/min per IP + email (a class signs in together from one campus IP) with a
+  300/min cap per IP, register 60/hour and password forgot 20/hour per IP, check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
   `Retry-After` header). The rates are settings (section 10). The counts live in the cache (Redis);
   while it cannot be reached the limits are skipped (logged), so signing in never needs Redis.
 
@@ -496,6 +496,6 @@ outside their membership; `changed` = a teacher corrected it.
   `DEFAULT_FROM_EMAIL`; host smtp.gmail.com:587 TLS. Empty `EMAIL_HOST_USER` = email reset off.
 - `WEB_URL` (https://attendanceportal.sakibkx.tech) for links in emails and QR codes.
 - `MIN_APP_VERSION`, `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT` (75).
-- Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_REGISTER`, `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`
+- Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_LOGIN_IP`, `THROTTLE_REGISTER`, `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`
   (defaults as in Conventions; raise them if a class behind one campus IP gets blocked). `NUM_PROXIES`
   (production, default 1 = nginx) picks the visitor IP from `X-Forwarded-For`.
