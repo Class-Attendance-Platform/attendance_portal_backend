@@ -1,0 +1,29 @@
+# Backend tests on the server's Python version, on every pull request.
+# Uses the test settings (SQLite + in-memory cache): no database or Redis needed.
+name: Tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Django checks
+        run: |
+          python manage.py check --settings=config.settings.test
+          python manage.py makemigrations --check --dry-run --settings=config.settings.test
+
+      - name: Tests
+        run: python manage.py test --settings=config.settings.test

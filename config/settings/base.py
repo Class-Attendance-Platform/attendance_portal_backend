@@ -69,7 +69,8 @@ DATABASES = {
         'HOST': config('DB_HOST'),
         'PORT': config('DB_PORT', default='5432'),
         'OPTIONS': {
-            'sslmode': 'require',
+            # "require" for hosted databases (Neon); "disable" for PostgreSQL on the same server
+            'sslmode': config('DB_SSLMODE', default='require'),
         },
     }
 }
@@ -123,15 +124,15 @@ SIMPLE_JWT = {
 }
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
+REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://localhost:6379/0'),
+        'LOCATION': REDIS_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            'CONNECTION_POOL_KWARGS': {
-                'ssl_cert_reqs': None,  # Required for Upstash TLS
-            },
+            # TLS (rediss://, e.g. Upstash) needs this; a plain local redis:// must not get it
+            'CONNECTION_POOL_KWARGS': {'ssl_cert_reqs': None} if REDIS_URL.startswith('rediss://') else {},
         }
     }
 }
