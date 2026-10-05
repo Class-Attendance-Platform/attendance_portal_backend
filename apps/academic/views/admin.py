@@ -12,6 +12,7 @@ from apps.academic.serializers import (
     StudentInClassroomSerializer, CourseInfoSerializer,
     PromoteStudentsSerializer,
 )
+from config.errors import validation_error_response
 
 
 # ── Semesters ─────────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ class SemesterListCreateView(APIView):
         if serializer.is_valid():
             semester = serializer.save()
             return Response({'success': True, 'semester': SemesterSerializer(semester).data}, status=201)
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
 
 class SemesterDetailView(APIView):
@@ -40,7 +41,7 @@ class SemesterDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response({'success': True, 'semester': serializer.data})
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
     def delete(self, request, uuid):
         semester = get_object_or_404(Semester, id=uuid)
@@ -64,7 +65,7 @@ class CourseListCreateView(APIView):
         if serializer.is_valid():
             course = serializer.save()
             return Response({'success': True, 'course': CourseSerializer(course).data}, status=201)
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
 
 class CourseDetailView(APIView):
@@ -76,7 +77,7 @@ class CourseDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response({'success': True, 'course': serializer.data})
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
     def delete(self, request, uuid):
         course = get_object_or_404(Course, id=uuid)
@@ -99,7 +100,7 @@ class ClassroomListCreateView(APIView):
         if serializer.is_valid():
             classroom = serializer.save()
             return Response({'success': True, 'classroom': ClassroomSerializer(classroom).data}, status=201)
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
 
 class ClassroomDetailView(APIView):
@@ -111,7 +112,7 @@ class ClassroomDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response({'success': True, 'classroom': serializer.data})
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
     def delete(self, request, uuid):
         classroom = get_object_or_404(Classroom, id=uuid)
@@ -140,7 +141,7 @@ class ClassroomStudentsView(APIView):
         classroom = get_object_or_404(Classroom, id=uuid, deleted=False)
         serializer = ClassroomStudentBulkSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         student_ids = serializer.validated_data['student_ids']
         added, already_in, not_found = [], [], []
@@ -168,7 +169,7 @@ class ClassroomStudentsView(APIView):
         classroom = get_object_or_404(Classroom, id=uuid, deleted=False)
         serializer = ClassroomStudentBulkSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         student_ids = serializer.validated_data['student_ids']
         removed, not_found = [], []
@@ -193,7 +194,7 @@ class ClassroomPromoteView(APIView):
         classroom = get_object_or_404(Classroom, id=uuid, deleted=False)
         serializer = PromoteStudentsSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         new_level = serializer.validated_data['new_level']
         new_semester = serializer.validated_data['new_semester']
@@ -237,7 +238,7 @@ class CourseInfoListCreateView(APIView):
                 {'success': True, 'course_info': CourseInfoSerializer(ci).data},
                 status=201
             )
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
 
 class CourseInfoDetailView(APIView):
@@ -249,7 +250,7 @@ class CourseInfoDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             return Response({'success': True, 'course_info': serializer.data})
-        return Response({'success': False, 'errors': serializer.errors}, status=400)
+        return validation_error_response(serializer.errors)
 
     def delete(self, request, uuid):
         ci = get_object_or_404(CourseInfo, id=uuid)

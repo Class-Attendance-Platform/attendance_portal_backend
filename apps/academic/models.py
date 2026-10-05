@@ -1,6 +1,8 @@
 import uuid
 from django.db import models
 
+LEVEL_NUMBERS = {'First': 1, 'Second': 2, 'Third': 3, 'Fourth': 4}
+
 
 class Semester(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -16,6 +18,16 @@ class Semester(models.Model):
 
     def __str__(self):
         return f'{self.level} - {self.semester}'
+
+    @property
+    def label(self):
+        """What people read, e.g. "Level 3 · Term I · 2025-26" (the session part only once set)."""
+        level = LEVEL_NUMBERS.get(self.level, self.level)
+        parts = [f'Level {level}', f'Term {self.semester}']
+        session = getattr(self, 'session', '')  # the session field arrives with the semester redesign
+        if session:
+            parts.append(session)
+        return ' · '.join(parts)
 
 
 class Course(models.Model):

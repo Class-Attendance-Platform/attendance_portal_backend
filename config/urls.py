@@ -14,3 +14,7 @@ urlpatterns = [
     path('api/reports/', include('apps.reports.urls')),
     path('api/faces/', include('apps.faces.urls')),
 ]
+
+# Errors outside the API views answer JSON with a readable message too (config/errors.py)
+handler404 = 'config.errors.json_not_found'
+handler500 = 'config.errors.json_server_error'

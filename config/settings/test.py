@@ -34,3 +34,11 @@ CACHES = {
 
 # Faster password hashing for tests and local previews only.
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
+
+# Email never leaves this machine: tests keep messages in memory (django.core.mail.outbox).
+# Password reset by email counts as "on" here; never put real mail credentials in this file.
+EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
+EMAIL_HOST_USER = 'portal@example.com'
+EMAIL_HOST_PASSWORD = ''
+DEFAULT_FROM_EMAIL = 'HSTU Attendance Portal <portal@example.com>'
+WEB_URL = 'http://localhost:8081'

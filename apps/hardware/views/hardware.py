@@ -21,6 +21,7 @@ from apps.hardware.serializers import (
     EnrollCompleteSerializer,
     EnrollmentRequestSerializer,
 )
+from config.errors import validation_error_response
 
 
 # ── Admin — Device Management ─────────────────────────────────────────────────
@@ -81,7 +82,7 @@ class HardwareSyncView(APIView):
     def post(self, request):
         serializer = HardwareSyncSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data       = serializer.validated_data
         student_id = data['student_id']
@@ -140,7 +141,7 @@ class EnrollStartView(APIView):
     def post(self, request):
         serializer = EnrollStartSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         student = request.user.student_profile
 
@@ -178,7 +179,7 @@ class EnrollCompleteView(APIView):
     def post(self, request):
         serializer = EnrollCompleteSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data = serializer.validated_data
 

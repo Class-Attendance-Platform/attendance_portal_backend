@@ -13,20 +13,24 @@ PASSWORD = 'Test-pass-123'
 
 
 def make_user(email, role, **extra):
+    extra.setdefault('is_verified', True)
     return User.objects.create_user(
-        username=email, email=email, password=PASSWORD, role=role, is_verified=True, **extra
+        username=email, email=email, password=PASSWORD, role=role, **extra
     )
 
 
-def make_student(email, student_id):
-    user = make_user(email, User.Role.STUDENT, first_name='Student', last_name=str(student_id))
+def make_student(email, student_id, **user_extra):
+    user_extra.setdefault('first_name', 'Student')
+    user_extra.setdefault('last_name', str(student_id))
+    user = make_user(email, User.Role.STUDENT, **user_extra)
     return StudentProfile.objects.create(
         user=user, student_id=student_id, current_level='Third', current_semester='I'
     )
 
 
-def make_teacher(email):
-    user = make_user(email, User.Role.TEACHER, first_name='Teacher')
+def make_teacher(email, **user_extra):
+    user_extra.setdefault('first_name', 'Teacher')
+    user = make_user(email, User.Role.TEACHER, **user_extra)
     return TeacherProfile.objects.create(user=user, employee_id=email)
 
 

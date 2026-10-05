@@ -109,6 +109,16 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
+    # Every error carries a readable "message" (config/errors.py)
+    'EXCEPTION_HANDLER': 'config.errors.api_exception_handler',
+    # Per IP (login, register, password_forgot) or per user (check_in); see apps/users/throttles.py.
+    # Classes behind one shared campus IP may need higher limits: raise them in .env.
+    'DEFAULT_THROTTLE_RATES': {
+        'login': config('THROTTLE_LOGIN', default='10/min'),
+        'register': config('THROTTLE_REGISTER', default='5/hour'),
+        'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='5/hour'),
+        'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
+    },
 }
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
@@ -136,6 +146,29 @@ CACHES = {
         }
     }
 }
+
+# ── App ───────────────────────────────────────────────────────────────────────
+# Public address of the web app: links in emails and QR codes (no trailing slash)
+WEB_URL = config('WEB_URL', default='https://attendanceportal.sakibkx.tech').rstrip('/')
+# The Android app blocks with "Please update" below MIN_APP_VERSION (GET /api/config/app/)
+MIN_APP_VERSION = config('MIN_APP_VERSION', default='1.0.0')
+LATEST_APP_VERSION = config('LATEST_APP_VERSION', default='1.0.0')
+ATTENDANCE_MIN_PERCENT = config('ATTENDANCE_MIN_PERCENT', default=75, cast=int)
+
+# ── Email (Gmail SMTP; password reset links) ──────────────────────────────────
+# Empty EMAIL_HOST_USER = password reset by email is off (admins reset passwords instead).
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_TIMEOUT = 20
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')  # Gmail app password
+DEFAULT_FROM_EMAIL = config(
+    'DEFAULT_FROM_EMAIL',
+    default=f'HSTU Attendance Portal <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'webmaster@localhost',
+)
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24  # reset links work for 1 day
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True  # Tighten in production

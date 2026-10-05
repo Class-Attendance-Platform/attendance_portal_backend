@@ -16,6 +16,8 @@ hardware hidden, one date = one class.
 - Every response has `success: bool`. Errors: `{"success": false, "message": "<one readable
   sentence>", "code": "<machine_code>"?, "errors": {"field": ["msg"]}?}`. **`message` is always
   present on errors** (for field errors it repeats the first one in plain words, never "field: msg").
+  Common codes: `not_authenticated`, `token_not_valid` (401), `permission_denied` (403), `not_found`,
+  `throttled`. Unknown addresses and server errors answer JSON too (`not_found`, `server_error`).
 - Existing keys keep their names (some are camelCase, e.g. `userName`, `presentStudents`). **New keys
   are snake_case.**
 - Dates `YYYY-MM-DD` (Asia/Dhaka local date). Date-times ISO 8601 with offset. The app formats them
@@ -25,7 +27,8 @@ hardware hidden, one date = one class.
 - Lists the admin pages show are returned whole (one department is small: hundreds of rows). Search
   and filters run on the server with query parameters where listed.
 - Throttles (DRF, per IP unless noted): login 10/min, register 5/hour, password forgot 5/hour,
-  check-in 30/min per user. Throttled requests get 429 with a `message`.
+  check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
+  `Retry-After` header). The rates are settings (section 10).
 
 ## 1. Accounts and sign-in
 
@@ -36,6 +39,8 @@ Body `{email, password}`. **Email is case-insensitive.** 200: as today
 - 403 `code: "pending_approval"`, "Your account is waiting for admin approval." (correct password, not
   approved yet; no tokens)
 - 403 `code: "account_disabled"`, "This account has been disabled. Contact the department office."
+
+Admins (role ADMIN or superuser, e.g. made by `createsuperuser`) never wait for approval.
 
 `user` (also returned by `/auth/me/`):
 ```
@@ -48,7 +53,8 @@ Body `{email, password}`. **Email is case-insensitive.** 200: as today
 ### POST /auth/register/ (public)
 Student: `{role: "STUDENT", email, password, first_name, last_name, student_id, current_level,
 current_semester}`. Teacher: `{role: "TEACHER", email, password, first_name, last_name,
-employee_id}`. Faculty and department are set by the server (CSE). Email stored lower case.
+employee_id}`. `last_name` may be empty. Faculty and department are set by the server (CSE). Email
+stored lower case.
 Atomic: a duplicate email / student id / employee id gives 400 with a field error (never 500, never a
 half-made account). Password rules: Django validators (8+ chars, not common, not all digits).
 201 `{success, status: "pending", message: "Account created. An admin will approve it soon."}`.
@@ -67,7 +73,8 @@ returned: `{success, tokens: {access, refresh}}`.
 
 ### POST /auth/password/forgot/ (public)
 Body `{email}`. Always 200 `{success, message: "If an account exists for this email, we sent a link
-to reset the password."}` when email is configured. If email is not configured on the server:
+to reset the password."}` when email is configured (400 only for a malformed email). If email is not
+configured on the server:
 503 `code: "email_not_configured"`, "Password reset by email is not set up. Ask an admin to reset
 your password." The email links to `{WEB_URL}/reset-password?uid=<uidb64>&token=<token>` (Django's
 password-reset token, valid 1 day, one use). Inactive / pending users get no email.
@@ -95,11 +102,12 @@ All admin endpoints need role ADMIN.
 
 ### GET /admin/users/pending/
 `{success, users: [{id, email, first_name, last_name, role, date_joined, student_id?,
-current_level?, current_semester?, employee_id?}]}`, oldest first.
+current_level?, current_semester?, employee_id?}]}`, oldest first (students and teachers only).
 
-### POST /admin/users/<user_id>/verify/  → approve (exists; keep)
+### POST /admin/users/<user_id>/verify/  → approve (exists; keep; PATCH also accepted for the old app)
 ### POST /admin/users/<user_id>/reject/
-Soft-deletes the account (`deleted=true`, `is_active=false`) and frees nothing else. 200.
+Soft-deletes the account (`deleted=true`, `is_active=false`) and frees nothing else (email and ids stay
+taken; a student's face data is removed, as with DELETE). Students and teachers only (404 otherwise). 200.
 
 ### POST /admin/users/<user_id>/reset-password/
 Body `{new_password}` (the admin's temporary password, validated). Blacklists the user's refresh
@@ -116,14 +124,19 @@ List query: `?search=` (name, email or student id), `?level=`, `?semester=` (ter
 POST body `{email, first_name, last_name, student_id, current_level, current_semester, password}`
 (password = temporary password; account is approved). PATCH is **partial**: any of `email,
 first_name, last_name, student_id, current_level, current_semester` (uniqueness checked, 400 field
-errors). DELETE = soft delete (also removes face data, as today). Unbinding devices is gone
-(see 5).
+errors). DELETE = soft delete (also removes face data, as today, and signs the user out). Unbinding
+devices is gone (see 5). Other `?status=` values → 400 `code: "invalid_status"`. GET of one row also
+works for deleted accounts; PATCH/DELETE of a deleted one → 404 (restore first). PUT is still accepted
+as PATCH for the old app. POST → 201 `{success, student: <row>}`; GET/PATCH → `{success, student}`.
 ### POST /admin/students/<profile_id>/restore/
+→ `{success, message, student: <row>}`.
 
 ### Teachers: GET/POST /admin/teachers/, GET/PATCH/DELETE /admin/teachers/<profile_id>/
 Row `{id, user_id, email, first_name, last_name, userName, employee_id, is_verified, is_active,
 deleted, last_login, course_count}`. POST `{email, first_name, last_name, employee_id, password}`.
-PATCH partial: `email, first_name, last_name, employee_id`. Same search/status filters.
+PATCH partial: `email, first_name, last_name, employee_id`. Same search/status filters (search: name,
+email or employee id); responses as for students with `teacher`. `course_count` counts the teacher's
+course-infos that are not deleted (nor their semester or course).
 ### POST /admin/teachers/<profile_id>/restore/
 
 ### POST /admin/students/import/ (multipart)
@@ -141,6 +154,12 @@ order, case-insensitive): `student_id`, `name` (or `first_name` + `last_name`), 
 ```
 "exists" = a student with that student id or email already exists (skipped). Imported accounts are
 approved. Temporary passwords are random 10-character strings shown once.
+Level also accepts 1–4 / "3rd", term 1 / 2. A row repeating an earlier row's student id or email is an
+error ("Same student ID as row 2."); an email of a teacher/admin account is an error. Applying writes
+only the "create" rows, in one transaction (409 `code: "conflict"` if someone added the same students
+meanwhile); without a class group yet, the semester gets its "Main" one. File problems (not .csv/.xlsx,
+missing columns, empty, unreadable, over 2 MB or 1000 rows) → 400 `code: "invalid_file"`; an unknown
+`semester_id` → 400 field error.
 
 ## 3. Admin: semesters, courses, assignments
 
@@ -330,3 +349,6 @@ for the signed-in student only (403 if not theirs).
   `DEFAULT_FROM_EMAIL`; host smtp.gmail.com:587 TLS. Empty `EMAIL_HOST_USER` = email reset off.
 - `WEB_URL` (https://attendanceportal.sakibkx.tech) for links in emails and QR codes.
 - `MIN_APP_VERSION`, `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT` (75).
+- Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_REGISTER`, `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`
+  (defaults as in Conventions; raise them if a class behind one campus IP gets blocked). `NUM_PROXIES`
+  (production, default 1 = nginx) picks the visitor IP from `X-Forwarded-For`.
