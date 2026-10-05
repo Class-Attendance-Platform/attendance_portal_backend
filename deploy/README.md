@@ -49,17 +49,12 @@ sudo -u postgres createdb --owner attendanceportal attendanceportal
 
 ### Copy the existing data from Neon
 
-Paste your Neon connection string when asked (it is not shown on screen). Find it in the Neon
-dashboard: Connect → turn **Connection pooling off** (the host must not contain `-pooler`; Neon
-says to use the direct connection for `pg_dump`) → copy the string, e.g.
-`postgresql://user:password@ep-xxx.region.aws.neon.tech/db?sslmode=require`.
+The Neon login is in the frontend repo's `.env` (after step 1 it is on this server). This reads it
+from there, uses Neon's direct connection (the host without `-pooler`, which Neon asks for with
+`pg_dump`) and never shows the password; the settings exist only inside the brackets:
 
 ```bash
-read -rs NEON_URL
-```
-
-```bash
-pg_dump "$NEON_URL" --format=custom --no-owner --no-privileges --file=/root/neon-attendance.dump
+( envf=/var/www/attendanceportal-frontend/.env; get() { grep -E "^$1=" "$envf" | head -1 | cut -d= -f2- | tr -d "\r"; }; export PGHOST="$(get DB_HOST | sed "s/-pooler//")" PGPORT="$(get DB_PORT)" PGDATABASE="$(get DB_NAME)" PGUSER="$(get DB_USER)" PGPASSWORD="$(get DB_PASSWORD)" PGSSLMODE=require; echo "Copying from $PGHOST, database $PGDATABASE"; pg_dump --format=custom --no-owner --no-privileges --file=/root/neon-attendance.dump && ls -lh /root/neon-attendance.dump )
 ```
 
 Restore it into the new database (asks for the `attendanceportal` password):
@@ -156,10 +151,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-api
 sudo systemctl status attendanceportal-api --no-pager
 ```
 
-If there is no admin account yet (the copied data may already have one):
+Your admin account (asks for its password twice; use your own email):
 
 ```bash
-cd /var/www/attendanceportal-backend && venv/bin/python manage.py createsuperuser --settings=config.settings.production
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py createsuperuser --settings=config.settings.production --email you@example.com --username you --role ADMIN
 ```
 
 ## 4. Web app
@@ -197,6 +192,9 @@ sudo systemctl reload nginx
 ```bash
 sudo certbot --nginx -d api.attendanceportal.sakibkx.tech -d attendanceportal.sakibkx.tech
 ```
+
+certbot writes the HTTPS settings into the two files in `/etc/nginx/sites-available/`. Don't copy
+the files from `deploy/nginx/` over them again (that removes HTTPS); change them in place instead.
 
 ## 6. Security check: PostgreSQL port
 
@@ -286,6 +284,25 @@ Web app (no restart needed; nginx serves the new files at once):
 ```bash
 cd /var/www/attendanceportal-frontend && git pull && npm ci && npm run build:web
 ```
+
+Only when `deploy/attendanceportal-api.service` changed (the hand-off says so):
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-api.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart attendanceportal-api
+```
+
+## Removing an account
+
+Shows the account and everything that goes with it, without changing anything:
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py remove_user someone@example.com --settings=config.settings.production
+```
+
+Then the same with `--apply` to remove it. Its login tokens stop working at once. It refuses to
+remove the last active admin. If the dry run prints Django admin history you want to keep, save
+that output first: it is deleted with the account. To only block a student or teacher, prefer the admin pages: removing
+a student also removes their attendance records.
 
 ## Troubleshooting
 

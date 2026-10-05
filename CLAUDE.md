@@ -50,7 +50,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   whitenoise for admin static files, HTTPS via nginx's `X-Forwarded-Proto`), `test.py`. `.env.example`
   lists the server's `.env` keys. `config/urls.py` mounts every app under `/api/`.
 - `apps/users/` User (UUID pk, email login, `role` STUDENT/TEACHER/ADMIN), Student/Teacher/AdminProfile,
-  DeviceBinding. `permissions.py`: role classes + `can_manage_course(user, course_info)` (admin, or the
+  DeviceBinding. Commands: `seed_local_demo` (local SQLite only), `remove_user <email>` (dry run;
+  `--apply` blocks its login tokens, then deletes; refuses the last active admin). `permissions.py`:
+  role classes + `can_manage_course(user, course_info)` (admin, or the
   course's own teacher) + `not_your_course_response()`. Views: `auth` (login/register/me/refresh),
   `admin` (CRUD students/teachers), `student` (semesters summary), `config` (enum lists).
 - `apps/academic/` Semester, Course, Classroom, StudentClassroom (enrolment), CourseInfo (course + teacher
