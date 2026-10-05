@@ -300,7 +300,8 @@ cd /var/www/attendanceportal-backend && venv/bin/python manage.py remove_user so
 ```
 
 Then the same with `--apply` to remove it. Its login tokens stop working at once. It refuses to
-remove the last active admin. To only block a student or teacher, prefer the admin pages: removing
+remove the last active admin. If the dry run prints Django admin history you want to keep, save
+that output first: it is deleted with the account. To only block a student or teacher, prefer the admin pages: removing
 a student also removes their attendance records.
 
 ## Troubleshooting

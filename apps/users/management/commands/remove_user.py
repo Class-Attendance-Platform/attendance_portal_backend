@@ -6,6 +6,7 @@ Removes one account, after showing everything that goes with it.
 
 Refuses to remove the last active admin, so nobody gets locked out.
 """
+from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
 from django.contrib.admin.utils import NestedObjects
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DEFAULT_DB_ALIAS, transaction
@@ -28,8 +29,11 @@ class Command(BaseCommand):
         if not users:
             raise CommandError(f'No account with the email {email}.')
         if len(users) > 1:  # emails are unique, but only with the exact same capitals
-            found = ', '.join(u.email for u in users)
-            raise CommandError(f'Several accounts match {email} ({found}): give the exact email.')
+            exact = [u for u in users if u.email == email]
+            if len(exact) != 1:
+                found = ', '.join(u.email for u in users)
+                raise CommandError(f'Several accounts match {email} ({found}): give the exact email.')
+            users = exact
         user = users[0]
 
         if self._is_last_admin(user):
@@ -62,6 +66,18 @@ class Command(BaseCommand):
             self.stdout.write('Kept, but no longer linked to this account:')
             for line in sorted(unlinked):
                 self.stdout.write(line)
+
+        # Its Django admin history is deleted with it: print it, so the output keeps a copy.
+        history = sorted(collector.model_objs.get(LogEntry, ()), key=lambda entry: entry.action_time)
+        if history:
+            self.stdout.write('Its Django admin history (removed with it; keep this output if you need it):')
+            actions = {ADDITION: 'added', CHANGE: 'changed', DELETION: 'deleted'}
+            for entry in history:
+                self.stdout.write(
+                    f'  {timezone.localtime(entry.action_time):%Y-%m-%d %H:%M} '
+                    f'{actions.get(entry.action_flag, entry.action_flag)} {entry.object_repr} '
+                    f'{entry.get_change_message()}'.rstrip()
+                )
 
         if not options['apply']:
             self.stdout.write(self.style.WARNING('Dry run: nothing removed. Add --apply to remove it.'))
