@@ -237,6 +237,9 @@ def student_course_detail(course_info, membership) -> dict:
             'teacher_name': person_name(teacher.user) if teacher else None,
             'semester': {k: v for k, v in semester_brief(course_info.semester).items() if k != 'id'},
         },
+        # Their membership: days before joined_at / from left_at on are outside it (status null)
+        'joined_at': iso_date(membership.joined_at),
+        'left_at': iso_date(membership.left_at),
         'attended': attended,
         'held': held,
         'percent': percent(attended, held),

@@ -8,6 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from PIL import Image
 
+from apps.academic.models import Course, Semester
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.tests.helpers import (
     client_for, make_admin, make_course_info, make_student, make_teacher,
@@ -247,6 +248,21 @@ class ClassPhotoTests(FaceTestCase):
     def test_other_teacher_cannot_confirm(self):
         other = client_for(make_teacher('other@example.com').user)
         self.assertEqual(self.confirm([], client=other).status_code, 403)
+
+    def test_not_for_a_finished_semester(self):
+        Semester.objects.filter(id=self.ci.semester_id).update(is_active=False)
+        for res in (self.recognize(self.photo(face(person(1, 0.1, 9)))), self.confirm([str(self.students[0].id)])):
+            self.assertEqual((res.status_code, res.data['code']), (400, 'semester_finished'))
+            self.assertEqual(res.data['message'], 'This semester is finished. Use roll call to add or fix a class.')
+        self.assertFalse(AttendanceSession.objects.exists())
+
+    def test_not_for_a_deleted_course_or_semester(self):
+        for model, pk in ((Course, self.ci.course_id), (Semester, self.ci.semester_id)):
+            model.objects.filter(pk=pk).update(deleted=True)
+            self.assertEqual(self.confirm([str(self.students[0].id)]).status_code, 404)
+            self.assertEqual(self.recognize(self.photo()).status_code, 404)
+            model.objects.filter(pk=pk).update(deleted=False)
+        self.assertFalse(AttendanceSession.objects.exists())
 
     def test_live_sessions_cannot_use_face_mode(self):
         res = self.client.post('/api/sessions/start/', {

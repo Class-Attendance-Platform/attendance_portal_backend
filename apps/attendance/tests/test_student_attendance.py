@@ -102,6 +102,7 @@ class StudentCourseDetailTests(StudentTestCase):
         })
         self.assertEqual({k: res.data[k] for k in ('attended', 'held', 'percent', 'classes_needed')},
                          {'attended': 1, 'held': 3, 'percent': 33.3, 'classes_needed': 5})
+        self.assertEqual((res.data['joined_at'], res.data['left_at']), ('2026-09-03', None))
         self.assertEqual(res.data['days'], [
             {'date': '2026-09-05', 'status': 'ABSENT', 'method': None, 'changed': False},
             {'date': '2026-09-04', 'status': 'ABSENT', 'method': None, 'changed': True},
@@ -120,6 +121,15 @@ class StudentCourseDetailTests(StudentTestCase):
         StudentClassroom.objects.filter(student=self.student, classroom__semester=self.third).update(left_at=D[4])
         res = self.client.get(f'/api/student/course-info/{self.ci.id}/')
         self.assertEqual((res.data['held'], res.data['days'][0]['status']), (2, None))
+        self.assertEqual(res.data['left_at'], '2026-09-05')
+
+    def test_a_student_added_after_classes_were_held(self):
+        newbie = make_student('n@example.com', 2302003)
+        StudentClassroom.objects.create(student=newbie, classroom=self.ci.classroom, joined_at=D[4] + datetime.timedelta(1))
+        res = client_for(newbie.user).get(f'/api/student/course-info/{self.ci.id}/')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual((res.data['joined_at'], res.data['left_at'], res.data['held']), ('2026-09-06', None, 0))
+        self.assertEqual({d['status'] for d in res.data['days']}, {None})  # every class was before they joined
 
 
 class FillMethodMigrationTests(TestCase):

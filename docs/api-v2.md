@@ -6,18 +6,23 @@ file disagree, fix one of them in the same change.
 
 Owner decisions behind it: one department (CSE), English only, light theme, sign-up needs admin
 approval, password help by email (Gmail) plus admin reset, Present/Absent only, one class group per
-semester, late joiners counted from the day they joined, no lock on finished semesters, fingerprint
-hardware hidden, one date = one class.
+semester, late joiners counted from the day they joined, no lock on finished semesters (corrections
+and roll call allowed) but no new live or face sessions there, fingerprint hardware hidden, one date =
+one class.
 
 ## Conventions
 
 - Base path `/api/`. JSON. Auth: `Authorization: Bearer <access>`; refresh tokens rotate (the old one
-  is blacklisted after use).
+  is blacklisted after use). Tokens carry a fingerprint of the password: after a password change,
+  reset or admin reset, every token made before it answers 401 `code: "password_changed"` ("Your
+  password was changed. Please sign in again."), access tokens at once. `POST /auth/refresh/`
+  `{refresh}` → `{access, refresh}` gives an older refresh token without the fingerprint one (no
+  one is signed out when this starts).
 - Every response has `success: bool`. Errors: `{"success": false, "message": "<one readable
   sentence>", "code": "<machine_code>"?, "errors": {"field": ["msg"]}?}`. **`message` is always
   present on errors** (for field errors it repeats the first one in plain words, never "field: msg").
-  Common codes: `not_authenticated`, `token_not_valid` (401), `permission_denied` (403), `not_found`,
-  `throttled`. Unknown addresses and server errors answer JSON too (`not_found`, `server_error`).
+  Common codes: `not_authenticated`, `token_not_valid`, `password_changed` (401), `permission_denied`
+  (403), `not_found`, `throttled`. Unknown addresses and server errors answer JSON too (`not_found`, `server_error`).
 - Existing keys keep their names (some are camelCase, e.g. `userName`, `presentStudents`). **New keys
   are snake_case.**
 - Dates `YYYY-MM-DD` (Asia/Dhaka local date). Date-times ISO 8601 with offset. The app formats them
@@ -27,7 +32,8 @@ hardware hidden, one date = one class.
 - Lists the admin pages show are returned whole (one department is small: hundreds of rows). Search
   and filters run on the server with query parameters where listed.
 - Throttles (DRF): login 10/min per IP + email (a class signs in together from one campus IP) with a
-  300/min cap per IP, register 60/hour and password forgot 20/hour per IP, check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
+  300/min cap per IP, register 10/hour per IP + email (failed tries count too) with a 300/hour cap per
+  IP, password forgot 20/hour per IP, check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
   `Retry-After` header). The rates are settings (section 10). The counts live in the cache (Redis);
   while it cannot be reached the limits are skipped (logged), so signing in never needs Redis.
 
@@ -71,8 +77,9 @@ Body `{first_name?, last_name?}`. Users may change only their name. 200 `{succes
 
 ### POST /auth/password/change/ (signed in)
 Body `{current_password, new_password}`. 400 `code: "wrong_password"` or field errors. On success
-**all the user's refresh tokens are blacklisted** (other devices are signed out) and a fresh pair is
-returned: `{success, tokens: {access, refresh}}`.
+**all the user's refresh tokens are blacklisted** and the other devices' access tokens stop working
+at once (401 `password_changed`): other devices are signed out. A fresh pair is returned:
+`{success, tokens: {access, refresh}}`.
 
 ### POST /auth/password/forgot/ (public)
 Body `{email}`. Always 200 `{success, message: "If an account exists for this email, we sent a link
@@ -84,7 +91,8 @@ password-reset token, valid 1 day, one use). Inactive / pending users get no ema
 
 ### POST /auth/password/reset/ (public)
 Body `{uid, token, new_password}`. 200 `{success, message}`; 400 `code: "invalid_link"` ("This link
-is invalid or has expired.") or password field errors. Blacklists the user's refresh tokens.
+is invalid or has expired.") or password field errors. Blacklists the user's refresh tokens; their
+access tokens stop working at once (401 `password_changed`).
 
 ### GET /config/app/ (public)
 ```
@@ -114,7 +122,7 @@ taken; a student's face data is removed, as with DELETE). Students and teachers 
 
 ### POST /admin/users/<user_id>/reset-password/
 Body `{new_password}` (the admin's temporary password, validated). Blacklists the user's refresh
-tokens. 200 `{success, message}`.
+tokens; their access tokens stop working at once (401 `password_changed`). 200 `{success, message}`.
 
 ### Students: GET/POST /admin/students/, GET/PATCH/DELETE /admin/students/<profile_id>/
 List query: `?search=` (name, email or student id), `?level=`, `?semester=` (term),
@@ -227,8 +235,9 @@ Semester row:
   "Same-day changes") → `{success, message, removed}`; ids that are not current members are ignored.
   The import (section 2, `semester_id`) adds students the same way.
 - Courses taught in a semester: GET /admin/semesters/<id>/courses/ →
-  `{success, courses: [{course_info_id, course: {id, code, title, credits}, teacher: {id, name} |
-  null}]}` (by course code). POST `{course_id, teacher_id}` → creates the CourseInfo on the
+  `{success, courses: [{course_info_id, course: {id, code, title, credits}, teacher: {id, name,
+  deleted} | null}]}` (by course code; `teacher.deleted` = that teacher's account was deleted, so
+  nobody can take the course's attendance until another teacher is chosen). POST `{course_id, teacher_id}` → creates the CourseInfo on the
   semester's classroom; 201 `{success, message, course: <row>}`. `teacher_id` may be null or left
   out (no teacher yet). An unknown/deleted course or teacher → 400 field error; a course already
   taught in the semester → 400 `code: "course_already_added"`; a course removed from this semester
@@ -273,12 +282,12 @@ from teachers and students too (and from the semester's courses and the course-i
   course) percent with held > 0 (one decimal; null when nothing is held); `below_min_count` =
   students below `ATTENDANCE_MIN_PERCENT` in at least one course.
 - `recent_sessions`: finished sessions of courses that are not deleted, newest saved first;
-  `present` / `total` = its PRESENT logs / all its logs.
+  `present` / `total` = its PRESENT logs / all its logs, of accounts that are not deleted.
 
 The admin opens any course's attendance through the teacher endpoints in section 6 (admins pass
 `can_manage_course`); the admin UI is read-only there. List of all taught courses:
 GET /admin/course-info/ (exists) with `?semester_id=` (not a valid id → 400); key `course_infos`; row
-`{id, course: {id, code, title}, teacher: {id, name} | null, semester: {id, label, is_active},
+`{id, course: {id, code, title}, teacher: {id, name, deleted} | null, semester: {id, label, is_active},
 student_count, classes_held, average_percent}` (class list; classes_held = class dates; average as
 above, null without classes). Leaves out deleted course-infos, courses and semesters; ordered like
 the semesters list, then by course code.
@@ -307,7 +316,10 @@ Teacher (owner of the course, or admin):
   this course (a session whose timer ran out is saved first and does not block). `delivery`
   defaults to IN_CLASS and `duration_minutes` to 5; other values → 400. Optional `mode` (default
   `QR_ONLINE`; `FINGERPRINT` / `QR_OFFLINE` stay for the hidden fingerprint devices and the offline
-  laptop server; `FACE` → 400). 404 for a deleted course-info, course or semester.
+  laptop server; `FACE` → 400). 404 for a deleted course-info, course or semester. 400 `code:
+  "semester_finished"` ("This semester is finished. Use roll call to add or fix a class.") for a
+  course of a finished semester: no new live or face sessions there (roll call and corrections stay
+  allowed, section 6).
 - GET /sessions/<id>/code/ → `{success, code: "482913", check_in_url, expires_in /* s until it
   changes */, period: 30}`. Poll every few seconds. 410 `session_ended` once the session is over
   (an expired one is saved); 400 `no_code` for a fingerprint session.
@@ -322,8 +334,9 @@ Teacher (owner of the course, or admin):
   can add up to N more minutes."). 410 `session_ended` when it is over.
 - POST /sessions/<id>/mark/ `{profile_id}` while live → adds the student to the live check-ins with
   method TEACHER (saved with the session) → `{success, message, student: {profile_id, student_id,
-  name, time, method: "TEACHER"}}`. 400 `not_enrolled` (not a current member enrolled on the
-  session's date), 409 `already_checked_in`, 410 `session_ended`. After the session ended, use
+  name, time, method: "TEACHER"}}`. 400 `not_enrolled` (not enrolled on the session's date: anyone
+  in `not_checked_in` can be marked, also a student removed today after a class, see section 3),
+  409 `already_checked_in`, 410 `session_ended`. After the session ended, use
   section 6 corrections.
 - POST /sessions/<id>/stop/ → saves now (exists) → `{success, message, session_id, total_present}`.
 - POST /sessions/<id>/cancel/ → discards the session and its check-ins (the session is deleted:
@@ -402,18 +415,31 @@ changes (several sessions a day); a student without a log that day gets one (met
 status ""). 200 `{success, message, changed: bool /* false = it was already so */, day: {date,
 status, method, changed_by, changed_at}}`.
 
+### GET /teacher/course-info/<id>/roll-call/?date=YYYY-MM-DD
+Whom a roll call for that date covers: `{success, date, has_class: bool, live_session_id | null,
+version, students: [{profile_id, student_id, name, joined_at, left_at, status:
+"PRESENT"|"ABSENT"|null}]}`. `students` = everyone enrolled on that date (section 3; students who
+left since are included, deleted accounts are not), by student id; `status` = their day status as
+in the history (null = no log that day). `live_session_id` = a live session of the course on that
+date (still taking check-ins). `version` = a short fingerprint of the list and its statuses (send it
+back with the POST). A missing or bad date → 400; future dates → 400 `code: "future_date"`.
+
 ### POST /teacher/course-info/<id>/roll-call/  (replaces history-session POST)
-Body `{date, present_profile_ids: [..]}`. Creates the class for that date if missing (source
+Body `{date, present_profile_ids: [..], version?}`. Creates the class for that date if missing (source
 TEACHER/MANUAL). For each student enrolled on that date: creates a log if missing; changes an
 existing log only if its status differs (recorded like a correction). Never re-labels other methods.
-Future dates → 400 `code: "future_date"`. 200 `{success, message, date, present, absent, changed}`
-(`present`/`absent` = students enrolled that date; `changed` = students whose existing status
-changed). Ids of students not enrolled on that date are ignored. Created logs: source MANUAL,
-method TEACHER.
+Future dates → 400 `code: "future_date"`. 409 `code: "session_running"` (with `session_id`) while a
+live session runs on that date (mark students in the session instead). With `version` (from the GET):
+409 `code: "date_changed"` ("This date changed since you opened it. Check the list and save again.")
+when the date's list or statuses changed since (a saved session, a correction, another roll call):
+nothing is saved. 200 `{success, message, date, present, absent, changed}` (`present`/`absent` =
+students enrolled that date; `changed` = students whose existing status changed). Ids of students
+not enrolled on that date are ignored. Created logs: source MANUAL, method TEACHER. Roll call and
+corrections also work for finished semesters.
 
 ### DELETE /teacher/course-info/<id>/history-session/<date>/ (exists)
-Deletes that date's classes and logs (the UI asks for confirmation) → `{success, message, deleted
-/* logs */}`. 409 `session_running` while a live session runs on that date; a bad date → 400.
+Deletes that date's classes and logs (the UI asks for confirmation) → `{success, message ("The class
+on 06 Oct 2026 was deleted."), deleted /* logs */}`. 409 `session_running` while a live session runs on that date; a bad date → 400.
 
 All section 6 endpoints answer 404 for a deleted course, course-info or semester, and 403 (`code:
 "permission_denied"`, `You do not teach this course.`) for another teacher's course (as do the
@@ -439,14 +465,19 @@ be reached, e.g. a 100% minimum). The older keys stay with the same numbers (`to
 
 ### GET /student/course-info/<id>/
 `{success, course: {course_info_id, code, title, credits, teacher_name, semester: {label,
-is_active}}, attended, held, percent, classes_needed, days: [{date, status, method, changed: bool}]}`
-for the signed-in student only (403 `code: "not_enrolled"` if they were never in its class group;
-former members still see it). `days`: every class date of the course, newest first; status null =
-outside their membership; `changed` = a teacher corrected it.
+is_active}}, joined_at, left_at, attended, held, percent, classes_needed, days: [{date, status, method,
+changed: bool}]}` for the signed-in student only (403 `code: "not_enrolled"` if they were never in its
+class group; former members still see it). `joined_at` / `left_at` = their membership (as in the
+semesters summary; `left_at` set = a former member). `days`: every class date of the course, newest
+first; status null = outside their membership (before `joined_at`, on the join day for a class held
+before they were added, or from `left_at` on); `changed` = a teacher corrected it.
 
 ## 8. Faces, reports
 
 - Faces: as today. Course detail and course list carry face registration counts (section 6).
+  POST /faces/recognize/ and /faces/confirm/ answer 404 for a deleted course-info, course or
+  semester and 400 `code: "semester_finished"` for a course of a finished semester (as starting a
+  live session, section 5).
 - GET /reports/course-info/<id>/export/?format=pdf|xlsx|csv|docx&date=YYYY-MM-DD (exists).
   Fixes: generated time in Asia/Dhaka; join dates respected (not enrolled = blank, not absent); the
   PDF splits the date grid across pages so ID, name and % are always visible; header has course,
@@ -498,6 +529,7 @@ outside their membership; `changed` = a teacher corrected it.
   `DEFAULT_FROM_EMAIL`; host smtp.gmail.com:587 TLS. Empty `EMAIL_HOST_USER` = email reset off.
 - `WEB_URL` (https://attendanceportal.sakibkx.tech) for links in emails and QR codes.
 - `MIN_APP_VERSION`, `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT` (75).
-- Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_LOGIN_IP`, `THROTTLE_REGISTER`, `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`
+- Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_LOGIN_IP`, `THROTTLE_REGISTER`, `THROTTLE_REGISTER_IP`,
+  `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`
   (defaults as in Conventions; raise them if a class behind one campus IP gets blocked). `NUM_PROXIES`
   (production, default 1 = nginx) picks the visitor IP from `X-Forwarded-For`.

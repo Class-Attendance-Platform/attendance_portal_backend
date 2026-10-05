@@ -52,7 +52,10 @@ def roster_row(membership) -> dict:
 
 
 def teacher_brief(teacher):
-    return {'id': str(teacher.id), 'name': person_name(teacher.user)} if teacher else None
+    """{id, name, deleted}: `deleted` = the teacher's account was deleted (choose another teacher)."""
+    if not teacher:
+        return None
+    return {'id': str(teacher.id), 'name': person_name(teacher.user), 'deleted': teacher.user.deleted}
 
 
 def semester_course_row(ci) -> dict:

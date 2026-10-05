@@ -111,14 +111,16 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 20,
     # Every error carries a readable "message" (config/errors.py)
     'EXCEPTION_HANDLER': 'config.errors.api_exception_handler',
-    # Per IP (login, register, password_forgot) or per user (check_in); see apps/users/throttles.py.
-    # Classes behind one shared campus IP may need higher limits: raise them in .env.
+    # Per IP + email (login, register), per IP (the wide caps, password_forgot) or per user
+    # (check_in); see apps/users/throttles.py. Classes behind one shared campus IP may need
+    # higher limits: raise them in .env.
     'DEFAULT_THROTTLE_RATES': {
-        # A class signs in together from one campus IP: login counts per IP + email,
-        # with a wide per-IP cap; sign-up and reset counts allow a whole class.
+        # A class signs in or signs up together from one campus IP: login and sign-up count per
+        # IP + email, with a wide per-IP cap; the reset count allows a whole class.
         'login': config('THROTTLE_LOGIN', default='10/min'),
         'login_ip': config('THROTTLE_LOGIN_IP', default='300/min'),
-        'register': config('THROTTLE_REGISTER', default='60/hour'),
+        'register': config('THROTTLE_REGISTER', default='10/hour'),
+        'register_ip': config('THROTTLE_REGISTER_IP', default='300/hour'),
         'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='20/hour'),
         'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
     },
@@ -134,6 +136,11 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
+    # A password change, reset or admin reset also ends the other devices' access tokens at once
+    # (tokens carry a fingerprint of the password hash). Older refresh tokens get the fingerprint
+    # when they are refreshed, so switching this on signs nobody out: apps/users/jwt.py.
+    'CHECK_REVOKE_TOKEN': True,
+    'TOKEN_REFRESH_SERIALIZER': 'apps.users.jwt.PasswordCheckedRefreshSerializer',
 }
 
 # ── Redis ─────────────────────────────────────────────────────────────────────

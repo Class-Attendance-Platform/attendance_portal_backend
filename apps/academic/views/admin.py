@@ -459,9 +459,11 @@ class AdminOverviewView(APIView):
                 course_info__semester__deleted=False,
             )
             .select_related('course_info__course')
-            .annotate(
-                present=Count('logs', filter=Q(logs__status=AttendanceLog.Status.PRESENT)),
-                total=Count('logs'),
+            .annotate(  # deleted accounts left out, as on the course page
+                present=Count('logs', filter=Q(
+                    logs__status=AttendanceLog.Status.PRESENT, logs__student__user__deleted=False,
+                )),
+                total=Count('logs', filter=Q(logs__student__user__deleted=False)),
             )
             .order_by(F('ended_at').desc(nulls_last=True), '-started_at')[:10]
         )

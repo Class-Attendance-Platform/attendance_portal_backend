@@ -152,12 +152,18 @@ DEFAULT_MESSAGES = {
     'token_not_valid': 'Your sign-in has expired. Please sign in again.',
     'user_not_found': 'This account no longer exists.',
     'user_inactive': 'This account has been disabled. Contact the department office.',
+    # CHECK_REVOKE_TOKEN: the token was made before a password change (apps/users/jwt.py)
+    'password_changed': 'Your password was changed. Please sign in again.',
     'permission_denied': 'You do not have permission to do this.',
     'not_found': 'This item was not found.',
 }
 
 
 def _codes(exc):
+    detail = getattr(exc, 'detail', None)
+    if isinstance(detail, dict) and isinstance(detail.get('code'), str):
+        # SimpleJWT's own errors carry their code as text: {'detail': ..., 'code': 'password_changed'}
+        return str(detail['code'])
     try:
         codes = exc.get_codes()
     except Exception:  # pragma: no cover - defensive
@@ -196,7 +202,9 @@ def api_exception_handler(exc, context):
         code = _codes(exc) if isinstance(exc, exceptions.APIException) else None
         detail = body.get('detail')
         is_default = isinstance(exc, exceptions.APIException) and str(detail) == str(exc.default_detail)
-        if code in DEFAULT_MESSAGES and (is_default or code in ('token_not_valid', 'user_not_found', 'user_inactive')):
+        if code in DEFAULT_MESSAGES and (
+            is_default or code in ('token_not_valid', 'user_not_found', 'user_inactive', 'password_changed')
+        ):
             message = DEFAULT_MESSAGES[code]
         elif detail:
             message = _sentence(re.sub(r'\s+', ' ', str(detail)))

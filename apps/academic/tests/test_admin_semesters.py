@@ -306,10 +306,17 @@ class SemesterCoursesTests(AdminTestCase):
             'course_info_id': str(ci.id),
             'course': {'id': str(self.course.id), 'code': 'CSE301', 'title': 'Software Engineering',
                        'credits': 'CREDIT_3_00'},
-            'teacher': {'id': str(self.teacher.id), 'name': 'Nadia Islam'},
+            'teacher': {'id': str(self.teacher.id), 'name': 'Nadia Islam', 'deleted': False},
         }
         self.assertEqual(res.data['course'], expected)
         self.assertEqual(self.admin.get(self.url).data['courses'], [expected])
+
+    def test_a_deleted_teacher_is_marked(self):
+        self.add()
+        self.teacher.user.deleted = True
+        self.teacher.user.save(update_fields=['deleted'])
+        row = self.admin.get(self.url).data['courses'][0]
+        self.assertEqual((row['teacher']['name'], row['teacher']['deleted']), ('Nadia Islam', True))
 
     def test_without_a_teacher(self):
         res = self.add(teacher=None)

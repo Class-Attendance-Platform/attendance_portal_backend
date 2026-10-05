@@ -7,6 +7,7 @@ saves PRESENT/ABSENT logs exactly once. Corrections and roll calls (section 6) c
 logs and keep an AttendanceChange trail.
 """
 import datetime as dt
+import hashlib
 import logging
 from collections import defaultdict
 from datetime import timedelta
@@ -17,6 +18,7 @@ from django.utils import timezone
 from .models import AttendanceChange, AttendanceSession, AttendanceLog
 from apps.academic.models import CourseInfo, StudentClassroom
 from apps.attendance import codes, redis_service
+from apps.attendance.records import day_status
 
 logger = logging.getLogger(__name__)
 
@@ -270,11 +272,41 @@ def correct_attendance(course_info, student, day, status, user) -> bool:
         return _set_status(course_info, student, day, status, logs, user, now, record_new=True) is not None
 
 
-def roll_call(course_info, day, present_ids, user) -> dict:
+class DateChanged(Exception):
+    """The date's attendance changed after the roll call page loaded it (roll_call `expected_version`)."""
+
+
+def roll_call_list(course_info, day, logs=None) -> list:
+    """
+    [(membership, day status or None)] of everyone enrolled on `day` (former members too, by
+    student id): whom a roll call for that date covers. `logs` = {student id: [logs]} of the date.
+    """
+    if logs is None:
+        logs = defaultdict(list)
+        for log in AttendanceLog.objects.filter(course_info=course_info, date=day):
+            logs[log.student_id].append(log)
+    rows = []
+    for membership in enrolled_memberships(course_info, day).select_related('student__user').order_by(
+        'student__student_id',
+    ):
+        found = logs.get(membership.student_id)
+        rows.append((membership, day_status(found)[0] if found else None))
+    return rows
+
+
+def roll_call_version(rows) -> str:
+    """A short fingerprint of a date's roll call list and statuses (changes when either does)."""
+    text = '|'.join(f'{m.student_id}:{status or "-"}' for m, status in rows)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def roll_call(course_info, day, present_ids, user, expected_version=None) -> dict:
     """
     Saves a roll call for a date (creates the class if missing). For each student enrolled
     on that date: a log is created if missing; an existing one changes only if its status
     differs (recorded like a correction). Other methods are never re-labelled.
+    With `expected_version` (from the roll call list the page showed), raises DateChanged
+    instead when the date's list or statuses changed since, so a stale page overwrites nothing.
     """
     present_ids = {str(i) for i in present_ids}
     now = timezone.now()
@@ -284,6 +316,8 @@ def roll_call(course_info, day, present_ids, user) -> dict:
         logs = defaultdict(list)
         for log in AttendanceLog.objects.select_for_update().filter(course_info=course_info, date=day):
             logs[log.student_id].append(log)
+        if expected_version is not None and roll_call_version(roll_call_list(course_info, day, logs)) != expected_version:
+            raise DateChanged()
         for membership in enrolled_memberships(course_info, day).select_related('student'):
             student = membership.student
             is_present = str(student.id) in present_ids

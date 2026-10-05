@@ -1,5 +1,5 @@
-"""Request limits: login 10/min per IP + email (300/min per IP), register 60/hour and password forgot
-20/hour per IP, check-in 30/min per user."""
+"""Request limits: login 10/min per IP + email (300/min per IP), register 10/hour per IP + email
+(300/hour per IP), password forgot 20/hour per IP, check-in 30/min per user."""
 import uuid
 from unittest import mock
 
@@ -9,7 +9,7 @@ from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 
 from apps.attendance.tests.helpers import client_for, make_student
-from apps.users.throttles import LoginIPThrottle
+from apps.users.throttles import LoginIPThrottle, RegisterIPThrottle
 
 
 class ThrottleTests(TestCase):
@@ -49,11 +49,37 @@ class ThrottleTests(TestCase):
                 self.assertEqual(client.post('/api/auth/login/', body, format='json').status_code, 401)
             self.assert_throttled(client.post('/api/auth/login/', {'email': 'x@example.com', 'password': 'p'}, format='json'))
 
-    def test_register_60_per_hour(self):
+    def test_register_10_per_hour_per_ip_and_email(self):
         client = APIClient()
-        for _ in range(60):
-            self.assertEqual(client.post('/api/auth/register/', {}, format='json').status_code, 400)
-        self.assert_throttled(client.post('/api/auth/register/', {}, format='json'))
+        body = {'role': 'STUDENT', 'email': 'retry@example.com', 'password': 'password123'}
+        for _ in range(10):  # e.g. "This password is too common" again and again
+            self.assertEqual(client.post('/api/auth/register/', body, format='json').status_code, 400)
+        self.assert_throttled(client.post('/api/auth/register/', body, format='json'))
+        self.assert_throttled(client.post('/api/auth/register/', {**body, 'email': 'Retry@Example.com'}, format='json'))
+        # Another student on the same IP is counted on their own
+        other = client.post('/api/auth/register/', {**body, 'email': 'next@example.com'}, format='json')
+        self.assertEqual(other.status_code, 400)
+
+    def test_a_class_of_100_signing_up_from_one_ip_with_retries_is_not_blocked(self):
+        client = APIClient()
+        for n in range(100):
+            body = {
+                'role': 'STUDENT', 'email': f'student{n}@example.com', 'first_name': 'Class', 'last_name': f'Member {n}',
+                'student_id': 2302100 + n, 'current_level': 'Third', 'current_semester': 'I',
+            }
+            if n % 10 == 0:  # some try a common password first
+                res = client.post('/api/auth/register/', {**body, 'password': 'password123'}, format='json')
+                self.assertEqual(res.status_code, 400)
+            res = client.post('/api/auth/register/', {**body, 'password': 'Tiger-lake-2026'}, format='json')
+            self.assertEqual(res.status_code, 201, res.data)
+
+    def test_register_has_a_wide_cap_per_ip(self):
+        client = APIClient()
+        with mock.patch.dict(RegisterIPThrottle.THROTTLE_RATES, {'register_ip': '20/hour'}):
+            for n in range(20):
+                body = {'email': f'probe{n}@example.com'}
+                self.assertEqual(client.post('/api/auth/register/', body, format='json').status_code, 400)
+            self.assert_throttled(client.post('/api/auth/register/', {'email': 'x@example.com'}, format='json'))
 
     def test_password_forgot_20_per_hour(self):
         client = APIClient()
