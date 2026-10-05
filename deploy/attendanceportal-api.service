@@ -1,0 +1,26 @@
+# systemd service for the Attendance Portal API (gunicorn on a private socket).
+# Install:  sudo cp deploy/attendanceportal-api.service /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-api
+# Logs:     journalctl -u attendanceportal-api -f
+[Unit]
+Description=Attendance Portal API (gunicorn)
+After=network.target postgresql.service redis-server.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/attendanceportal-backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.production
+# Creates /run/attendanceportal-api owned by www-data; nginx connects to the socket in it
+RuntimeDirectory=attendanceportal-api
+# 2 workers x 4 threads. Each worker loads the face models once (~0.5 GB RAM).
+# Timeout 120 s: recognising 3 large class photos can take a while.
+ExecStart=/var/www/attendanceportal-backend/venv/bin/gunicorn config.wsgi:application \
+    --bind unix:/run/attendanceportal-api/gunicorn.sock \
+    --workers 2 --threads 4 --timeout 120 \
+    --access-logfile - --error-logfile -
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

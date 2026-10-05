@@ -1,7 +1,8 @@
 # Class Attendance Portal: backend
 
 Django 5 + DRF REST API for the HSTU class attendance app. The frontend is the sibling repo
-`attendance_portal_frontend` (Expo). **Not deployed yet**: it runs on the owner's Windows laptop.
+`attendance_portal_frontend` (Expo). Live on the owner's VPS: https://api.attendanceportal.sakibkx.tech
+(steps in `deploy/README.md`; the owner runs them). Development happens on the owner's Windows laptop.
 `README.md` is the original design plan (long; read only if needed).
 
 ## Working with the owner (always)
@@ -19,6 +20,8 @@ Django 5 + DRF REST API for the HSTU class attendance app. The frontend is the s
 - Migrations are append-only: never edit one that has been applied.
 - Never run anything on the owner's servers; give commands instead. Server data changes = management
   command, dry run by default, `--apply` to write.
+- Deploy loop: push → owner deploys → owner says "check now" → check the live site read-only and report.
+  Each hand-off states the commits, whether migrate/rebuild is needed, and one command per code block.
 - Never handle real passwords/tokens; only the seeded demo logins on localhost.
 - Never force-push, never change global git config (use `git -c safe.directory=<path>`), never hard-delete
   files (rename/move aside and say so). Files here use LF line endings; keep them.
@@ -43,7 +46,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 
 ## Code map
 - `config/settings/` `base.py` (Postgres + Redis from `.env` via python-decouple), `development.py`
-  (default), `production.py`, `test.py`. `config/urls.py` mounts every app under `/api/`.
+  (default), `production.py` (server: env `ALLOWED_HOSTS`/`CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS`,
+  whitenoise for admin static files, HTTPS via nginx's `X-Forwarded-Proto`), `test.py`. `.env.example`
+  lists the server's `.env` keys. `config/urls.py` mounts every app under `/api/`.
 - `apps/users/` User (UUID pk, email login, `role` STUDENT/TEACHER/ADMIN), Student/Teacher/AdminProfile,
   DeviceBinding. `permissions.py`: role classes + `can_manage_course(user, course_info)` (admin, or the
   course's own teacher) + `not_your_course_response()`. Views: `auth` (login/register/me/refresh),
@@ -72,7 +77,11 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   embedding per pose; class photos are never stored. Thresholds are settings (tunable via env). Models are
   non-commercial/academic use only. Tests use a fake engine (`apps/faces/tests/test_faces.py`).
 - `offline_server/` separate FastAPI app for offline QR on the teacher's laptop (calls this API).
-- Tests: `apps/*/tests/`; factories in `apps/attendance/tests/helpers.py`.
+- Tests: `apps/*/tests/`; factories in `apps/attendance/tests/helpers.py`. CI: `.github/workflows/tests.yml`
+  (Python 3.14 like the server; checks, migrations check, tests).
+- `deploy/` server files: `attendanceportal-api.service` (systemd, gunicorn on a unix socket as
+  www-data), `nginx/` (API proxy with 32 MB uploads; static web app with SPA fallback), `README.md`
+  (one command per block: database + Neon copy, backend, web build, nginx/certbot, app releases).
 
 ## Conventions
 - Class-based `APIView`s returning `{'success': bool, ...}`; errors as `{'success': False, 'message'|'errors'}`.

@@ -1,21 +1,24 @@
-django>=5.0
-djangorestframework>=3.15
-djangorestframework-simplejwt>=5.3
-psycopg2-binary>=2.9
-redis>=5.0
-django-redis>=5.4
-python-decouple>=3.8
-openpyxl>=3.1
-reportlab>=4.0
-python-docx>=1.1
-Pillow>=10.0
-django-cors-headers>=4.3
-django-filter>=23.0
-django-extensions>=3.2
-celery>=5.3
-qrcode[pil]>=7.4
-gunicorn>=21.2
-whitenoise>=6.6
-numpy>=1.26
-opencv-python-headless>=4.8
-onnxruntime>=1.17
+# Exact versions that the test suite passes with (Python 3.11 to 3.14).
+# Upgrade deliberately: change a version, run the tests, then commit.
+Django==5.2.17
+djangorestframework==3.18.1
+djangorestframework-simplejwt==5.5.1
+psycopg2-binary==2.9.13
+redis==8.1.0
+django-redis==7.0.0
+python-decouple==3.8
+openpyxl==3.1.5
+reportlab==5.0.1
+python-docx==1.2.0
+Pillow==12.3.0
+django-cors-headers==4.9.0
+django-filter==26.2
+django-extensions==4.1
+celery==5.6.3
+qrcode[pil]==8.2
+gunicorn==26.2.0
+whitenoise==6.12.0
+# Face attendance
+numpy==2.4.6
+opencv-python-headless==5.0.0.93
+onnxruntime==1.30.0
