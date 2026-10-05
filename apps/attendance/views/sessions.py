@@ -12,6 +12,7 @@ from apps.users.permissions import (
     IsAdminOrTeacher, IsStudent, can_manage_course, not_your_course_response,
 )
 from apps.users.models import StudentProfile, DeviceBinding
+from apps.users.throttles import CheckInThrottle
 from apps.academic.models import CourseInfo, StudentClassroom
 from apps.attendance.models import AttendanceSession, AttendanceLog
 from apps.attendance.serializers import (
@@ -20,6 +21,7 @@ from apps.attendance.serializers import (
 )
 from apps.attendance import redis_service
 from apps.attendance.services import finalize_session, finalize_expired_sessions, session_has_ended
+from config.errors import validation_error_response
 
 
 def busy_response():
@@ -35,7 +37,7 @@ class StartSessionView(APIView):
     def post(self, request):
         serializer = StartSessionSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data = serializer.validated_data
         ci = get_object_or_404(CourseInfo, id=data['course_info_id'], deleted=False)
@@ -164,12 +166,13 @@ class SessionStatusView(APIView):
 class QROnlineCheckinView(APIView):
     """Student submits attendance via QR online."""
     permission_classes = [IsStudent]
+    throttle_classes = [CheckInThrottle]
 
     def post(self, request, uuid):
         session = get_object_or_404(AttendanceSession, id=uuid, mode=AttendanceSession.Mode.QR_ONLINE)
         serializer = QRCheckinSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data = serializer.validated_data
 
@@ -238,7 +241,7 @@ class ManualMarkView(APIView):
 
         serializer = ManualMarkSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data = serializer.validated_data
         student = get_object_or_404(StudentProfile, id=data['student_id'], user__deleted=False)

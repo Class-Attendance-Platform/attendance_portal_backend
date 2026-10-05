@@ -3,21 +3,29 @@ from rest_framework.response import Response
 
 
 class IsAdmin(BasePermission):
+    message = 'Only admins can do this.'
+
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'ADMIN'
 
 
 class IsTeacher(BasePermission):
+    message = 'Only teachers can do this.'
+
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'TEACHER'
 
 
 class IsStudent(BasePermission):
+    message = 'Only students can do this.'
+
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'STUDENT'
 
 
 class IsAdminOrTeacher(BasePermission):
+    message = 'Only teachers and admins can do this.'
+
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role in ('ADMIN', 'TEACHER')
 

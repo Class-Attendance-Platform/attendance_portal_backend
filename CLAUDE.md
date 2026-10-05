@@ -48,13 +48,20 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - `config/settings/` `base.py` (Postgres + Redis from `.env` via python-decouple), `development.py`
   (default), `production.py` (server: env `ALLOWED_HOSTS`/`CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS`,
   whitenoise for admin static files, HTTPS via nginx's `X-Forwarded-Proto`), `test.py`. `.env.example`
-  lists the server's `.env` keys. `config/urls.py` mounts every app under `/api/`.
+  lists the server's `.env` keys (also email, `WEB_URL`, app versions, throttle rates).
+  `config/urls.py` mounts every app under `/api/` (JSON 404/500). `config/errors.py`: exception
+  handler + `error_response()` / `validation_error_response()` (every error has a readable `message`).
+- API contract for the redesign: `docs/api-v2.md` (source of truth; change it with the code).
 - `apps/users/` User (UUID pk, email login, `role` STUDENT/TEACHER/ADMIN), Student/Teacher/AdminProfile,
-  DeviceBinding. Commands: `seed_local_demo` (local SQLite only), `remove_user <email>` (dry run;
-  `--apply` blocks its login tokens, then deletes; refuses the last active admin). `permissions.py`:
-  role classes + `can_manage_course(user, course_info)` (admin, or the
-  course's own teacher) + `not_your_course_response()`. Views: `auth` (login/register/me/refresh),
-  `admin` (CRUD students/teachers), `student` (semesters summary), `config` (enum lists).
+  DeviceBinding. Sign-up waits for admin approval (`is_verified`; admins never wait). Commands:
+  `seed_local_demo` (local SQLite only), `remove_user <email>` (dry run; `--apply` blocks its login
+  tokens, then deletes; refuses the last active admin), `cleanup_broken_signups` (accounts without a
+  profile; dry run, `--apply`). `permissions.py`: role classes + `can_manage_course(user, course_info)`
+  (admin, or the course's own teacher) + `not_your_course_response()`. `throttles.py` (login, register,
+  password forgot per IP; check-in per user). `services.py` (tokens, blocking tokens, reset emails,
+  temporary passwords). `importing.py` (admin CSV/XLSX student import). Views: `auth` (login, register,
+  logout, me, password change/forgot/reset), `admin` (approvals, students/teachers with partial PATCH,
+  restore, import), `student` (semesters summary), `config` (`app/` settings + enum lists).
 - `apps/academic/` Semester, Course, Classroom, StudentClassroom (enrolment), CourseInfo (course + teacher
   + semester + classroom = one taught class). `views/teacher.py`: teacher's courses, course detail with
   attendance stats, bulk "history-session" save/delete by date. `views/admin.py`: admin CRUD.
@@ -86,7 +93,8 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   (one command per block: database + Neon copy, backend, web build, nginx/certbot, app releases).
 
 ## Conventions
-- Class-based `APIView`s returning `{'success': bool, ...}`; errors as `{'success': False, 'message'|'errors'}`.
+- Class-based `APIView`s returning `{'success': bool, ...}`; errors via `config/errors.py` helpers:
+  `{'success': False, 'message', 'code'?, 'errors'?}` (`message` always present).
 - Frontend expects some camelCase keys (`userName`, `attendanceMap`, `presentStudents`): don't rename.
 - Teacher-facing course endpoints must check `can_manage_course` and return `not_your_course_response()`.
 - Times: use `timezone.localdate()` / `timezone.localtime()` (TIME_ZONE is Asia/Dhaka).

@@ -5,7 +5,7 @@ Run with DJANGO_SETTINGS_MODULE=config.settings.production (the systemd service 
 from decouple import Csv, config
 
 from .base import *  # noqa: F401,F403
-from .base import MIDDLEWARE
+from .base import MIDDLEWARE, REST_FRAMEWORK
 
 DEBUG = False
 
@@ -19,6 +19,9 @@ CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')  #
 
 # nginx terminates HTTPS and forwards the original scheme
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Throttles count per visitor IP: take the address nginx appended to X-Forwarded-For
+# (one proxy), not the whole header, which a visitor could fill with anything.
+REST_FRAMEWORK = {**REST_FRAMEWORK, 'NUM_PROXIES': config('NUM_PROXIES', default=1, cast=int)}
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=0, cast=int)

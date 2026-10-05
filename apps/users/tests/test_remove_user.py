@@ -4,6 +4,7 @@ from unittest import mock
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.contenttypes.models import ContentType
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
@@ -25,6 +26,7 @@ def run(*args):
 
 class RemoveUserTests(TestCase):
     def setUp(self):
+        cache.clear()  # login rate limit counts live in the cache
         self.new_admin = make_admin('new-admin@example.com')
         self.old_admin = make_admin('old-admin@example.com')
 

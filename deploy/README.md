@@ -304,6 +304,29 @@ remove the last active admin. If the dry run prints Django admin history you wan
 that output first: it is deleted with the account. To only block a student or teacher, prefer the admin pages: removing
 a student also removes their attendance records.
 
+## Broken sign-ups
+
+The old sign-up page could save an account without its student/teacher profile. Such accounts
+cannot use the app and block their email from signing up again. This lists them, without changing
+anything:
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py cleanup_broken_signups --settings=config.settings.production
+```
+
+Then the same with `--apply` to remove them.
+
+## Password reset by email (Gmail)
+
+Off until `EMAIL_HOST_USER` is set (admins can always reset a password from the admin pages).
+Create a Gmail "app password" (Google account → Security → 2-Step Verification → App passwords),
+then add to the backend `.env` (see `.env.example`) `EMAIL_HOST_USER=<gmail address>`,
+`EMAIL_HOST_PASSWORD=<app password>` and `WEB_URL=https://attendanceportal.sakibkx.tech`, and restart:
+
+```bash
+sudo systemctl restart attendanceportal-api
+```
+
 ## Troubleshooting
 
 ```bash
