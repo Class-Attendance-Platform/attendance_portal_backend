@@ -6,7 +6,7 @@ from django.utils.dateparse import parse_date
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.academic.models import CourseInfo
+from apps.academic.models import CourseInfo, StudentClassroom
 from apps.academic.serializers import StudentInClassroomSerializer
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.services import finalize_ended_sessions, finalize_expired_sessions
@@ -24,8 +24,9 @@ class TeacherCoursesView(APIView):
                 {"success": False, "message": "You can only view your own courses."}, status=403
             )
 
+        # Deleted courses and semesters are hidden from teachers
         all_cis = CourseInfo.objects.filter(
-            teacher=teacher, deleted=False
+            teacher=teacher, deleted=False, course__deleted=False, semester__deleted=False,
         ).select_related("course", "semester", "classroom")
 
         # Save any of this teacher's sessions whose timer ran out (e.g. tab was closed)
@@ -74,14 +75,18 @@ class TeacherCourseInfoDetailView(APIView):
             ),
             id=uuid,
             deleted=False,
+            course__deleted=False,
         )
         if not can_manage_course(request.user, ci):
             return not_your_course_response()
 
         finalize_expired_sessions(ci)
 
-        # Get enrolled students via classroom
-        memberships = ci.classroom.memberships.select_related("student__user")
+        # The class list: current members (a finished semester: everyone who was in it)
+        memberships = (
+            StudentClassroom.objects.filter(classroom=ci.classroom).class_list(ci.semester)
+            .select_related("student__user").order_by("student__student_id")
+        )
         students = [m.student for m in memberships]
 
         # Calculate attendance stats (a fixed number of queries, whatever the class size).
@@ -178,8 +183,11 @@ class TeacherHistorySessionView(APIView):
                 status=400,
             )
 
-        # 1. Get all student profiles in this classroom
-        memberships = ci.classroom.memberships.select_related("student")
+        # 1. The students in this classroom on that date
+        memberships = (
+            StudentClassroom.objects.filter(classroom=ci.classroom)
+            .enrolled_on(day).active_accounts().select_related("student")
+        )
         all_students = [m.student for m in memberships]
         all_student_map = {s.student_id: s for s in all_students}
 

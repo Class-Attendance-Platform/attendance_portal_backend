@@ -40,12 +40,23 @@ def make_admin(email):
     return user
 
 
-def make_course_info(teacher, code='CSE301', students=()):
-    semester = Semester.objects.create(level='Third', semester='I')
-    course = Course.objects.create(code=code, title=f'Course {code}')
+def make_semester(level='Third', term='I', session='2025-26', students=(), **extra):
+    """A semester with its "Main" class group (students joined from the start)."""
+    semester = Semester.objects.create(level=level, semester=term, session=session, **extra)
     classroom = Classroom.objects.create(name='Main', semester=semester)
     for student in students:
         StudentClassroom.objects.create(student=student, classroom=classroom)
+    return semester
+
+
+def make_course_info(teacher, code='CSE301', students=(), semester=None):
+    """A course taught on `semester`'s class group (a new Level 3 Term I semester if None)."""
+    if semester is None:
+        semester = make_semester(students=students, session='')
+    elif students:
+        raise ValueError('Add students to the semester instead.')
+    course = Course.objects.create(code=code, title=f'Course {code}')
+    classroom = Classroom.objects.get(semester=semester, name='Main')
     return CourseInfo.objects.create(
         course=course, teacher=teacher, semester=semester, classroom=classroom
     )

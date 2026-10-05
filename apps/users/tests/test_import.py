@@ -6,9 +6,11 @@ from django.contrib.auth.hashers import check_password
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.academic.models import Classroom, Semester, StudentClassroom
+from apps.academic.models import Classroom, Course, CourseInfo, Semester, StudentClassroom
+from apps.attendance.models import AttendanceLog
 from apps.attendance.tests.helpers import client_for, make_admin, make_student, make_teacher
 from apps.users.models import StudentProfile, User
 from apps.users.services import TEMP_PASSWORD_PBKDF2_ITERATIONS, temporary_password, temporary_password_hash
@@ -115,6 +117,22 @@ class ImportTests(TestCase):
         self.post(upload('students.csv', CSV), apply='true', semester_id=str(semester.id))
         self.assertEqual(Classroom.objects.filter(semester=semester).count(), 1)
         self.assertEqual(StudentClassroom.objects.filter(classroom=main).count(), 2)
+
+    def test_semester_id_joins_like_the_roster(self):
+        """Before the semester's first class: from the start; after it: from today (late joiners)."""
+        semester = Semester.objects.create(level='Third', semester='I')
+        self.post(upload('students.csv', CSV), apply='true', semester_id=str(semester.id))
+        self.assertEqual(set(StudentClassroom.objects.values_list('joined_at', 'left_at')), {(None, None)})
+
+        main = Classroom.objects.get(semester=semester)
+        ci = CourseInfo.objects.create(course=Course.objects.create(code='CSE301', title='SE'),
+                                       semester=semester, classroom=main)
+        AttendanceLog.objects.create(course_info=ci, student=StudentProfile.objects.get(student_id=2302101),
+                                     date=timezone.localdate(), status='PRESENT')
+        self.post(upload('more.csv', 'email,name,student_id,level,term\nlate@example.com,Late One,2302200,Third,I\n'),
+                  apply='true', semester_id=str(semester.id))
+        late = StudentClassroom.objects.get(student__student_id=2302200)
+        self.assertEqual(late.joined_at, timezone.localdate())
 
     def test_unknown_semester(self):
         for value in ('not-a-uuid', '6f1c1f2e-1111-4a4a-9b9b-123456789abc'):

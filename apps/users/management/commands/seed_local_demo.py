@@ -49,7 +49,9 @@ class Command(BaseCommand):
             teacher_user = self._user(f'teacher@{DOMAIN}', User.Role.TEACHER, 'Demo', 'Teacher')
             teacher, _ = TeacherProfile.objects.get_or_create(user=teacher_user, defaults={'employee_id': 'EMP-DEMO'})
 
-            semester, _ = Semester.objects.get_or_create(level='Third', semester='I', defaults={'is_active': True})
+            semester, _ = Semester.objects.get_or_create(
+                level='Third', semester='I', defaults={'is_active': True, 'session': '2025-26'},
+            )
             course, _ = Course.objects.get_or_create(code='CSE301', defaults={'title': 'Software Engineering'})
             classroom, _ = Classroom.objects.get_or_create(semester=semester, name='Main')
             CourseInfo.objects.get_or_create(course=course, teacher=teacher, semester=semester, classroom=classroom)
