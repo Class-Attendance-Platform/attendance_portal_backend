@@ -131,19 +131,18 @@ def _students():
 
 
 def _current_semesters(profiles) -> dict:
-    """{profile id: the active semester whose class group they are in}."""
+    """{profile id: the active semester whose class group they are in now (not ones they left)}."""
     memberships = (
-        StudentClassroom.objects.filter(
+        StudentClassroom.objects.current().filter(
             student__in=profiles,
             classroom__deleted=False,
             classroom__semester__is_active=True,
             classroom__semester__deleted=False,
         )
         .select_related('classroom__semester')
-        .order_by('classroom__semester__level', 'classroom__semester__semester')
     )
     result = {}
-    for membership in memberships:
+    for membership in sorted(memberships, key=lambda m: m.classroom.semester.sort_key()):
         result.setdefault(membership.student_id, membership.classroom.semester)
     return result
 

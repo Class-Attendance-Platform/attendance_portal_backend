@@ -19,10 +19,10 @@ def _get_report_data(course_info, filter_date=None):
     from apps.academic.models import StudentClassroom
     from apps.attendance.models import AttendanceLog
 
-    # All students in this course's classroom
+    # The course's class list: current members (a finished semester: everyone who was in it)
     memberships = StudentClassroom.objects.filter(
         classroom=course_info.classroom
-    ).select_related('student__user').order_by('student__student_id')
+    ).class_list(course_info.semester).select_related('student__user').order_by('student__student_id')
     students = [m.student for m in memberships]
 
     # Fetch logs

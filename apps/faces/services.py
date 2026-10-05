@@ -149,7 +149,7 @@ def recognize_class(course_info, uploads: list) -> dict:
     students = [
         m.student for m in StudentClassroom.objects.filter(
             classroom=course_info.classroom, student__user__deleted=False,
-        ).select_related('student__user').order_by('student__student_id')
+        ).current().select_related('student__user').order_by('student__student_id')
     ]
     index_of = {s.id: i for i, s in enumerate(students)}
 
@@ -239,18 +239,18 @@ def recognize_class(course_info, uploads: list) -> dict:
 
 def save_face_attendance(course_info, present_ids, day=None) -> AttendanceSession:
     """Saves the teacher-confirmed result as a finished FACE session."""
+    now = timezone.now()
+    day = day or timezone.localdate()
     enrolled = [
         m.student for m in StudentClassroom.objects.filter(
             classroom=course_info.classroom
-        ).select_related('student')
+        ).enrolled_on(day).active_accounts().select_related('student')
     ]
     enrolled_ids = {str(s.id) for s in enrolled}
     present_ids = {str(i) for i in present_ids}
     if not present_ids <= enrolled_ids:
         raise FaceError('Some selected students are not in this course.')
 
-    now = timezone.now()
-    day = day or timezone.localdate()
     with transaction.atomic():
         # Taking face attendance again the same day replaces the earlier face result.
         AttendanceSession.objects.filter(

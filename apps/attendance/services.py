@@ -26,14 +26,15 @@ def commit_session_to_db(session: AttendanceSession, submissions: dict):
     """
     Called when a session is stopped.
     Creates PRESENT logs for submitted students,
-    ABSENT logs for everyone else in the classroom.
+    ABSENT logs for everyone else in the classroom on the session's date
+    (not former members, not students who joined later, not deleted accounts).
     Students who already have a log for this session (e.g. a teacher's
     manual mark) keep it.
     submissions: { "<student_int_id>": {"name": str, "mac": str} }
     """
     enrolled = StudentClassroom.objects.filter(
         classroom=session.course_info.classroom
-    ).select_related('student')
+    ).enrolled_on(session.date).active_accounts().select_related('student')
 
     submitted_ids = {int(k) for k in submissions.keys()}
     now_time = timezone.localtime().time()
@@ -106,29 +107,39 @@ def finalize_expired_sessions(course_info):
 
 def get_student_attendance_summary(student_profile):
     """
-    Returns attendance grouped by semester for the student dashboard.
+    Returns attendance grouped by semester for the student dashboard: every semester
+    whose class group they are or were in (history stays), with that group's courses.
+    Only dates inside their membership count (joined_at <= date < left_at).
     """
-    from apps.academic.models import Semester
-
-    semesters = Semester.objects.filter(
-        classrooms__memberships__student=student_profile,
-        deleted=False
-    ).distinct().prefetch_related('course_infos__course', 'course_infos__teacher__user')
+    memberships = (
+        StudentClassroom.objects.filter(
+            student=student_profile, classroom__deleted=False, classroom__semester__deleted=False,
+        ).select_related('classroom__semester')
+    )
+    # One entry per semester (current membership first if there are several)
+    by_semester = {}
+    for membership in sorted(memberships, key=lambda m: m.left_at is not None):
+        by_semester.setdefault(membership.classroom.semester_id, membership)
+    ordered = sorted(by_semester.values(), key=lambda m: m.classroom.semester.sort_key())
 
     result = []
-    for sem in semesters:
+    for membership in ordered:
+        sem = membership.classroom.semester
+        course_infos = membership.classroom.course_infos.filter(
+            deleted=False, course__deleted=False,
+        ).select_related('course', 'teacher__user').order_by('course__code')
         courses_data = []
-        for ci in sem.course_infos.filter(deleted=False):
+        for ci in course_infos:
             logs = AttendanceLog.objects.filter(
                 course_info=ci,
                 student=student_profile,
             )
 
             # One class = one date: present if present in any session that day.
-            dates = sorted(set(logs.values_list('date', flat=True)))
+            dates = sorted(d for d in set(logs.values_list('date', flat=True)) if membership.covers(d))
             present_dates = set(
                 logs.filter(status=AttendanceLog.Status.PRESENT).values_list('date', flat=True)
-            )
+            ) & set(dates)
             total = len(dates)
             present = len(present_dates)
             percentage = round((present / total * 100), 2) if total > 0 else 0.0
@@ -163,6 +174,9 @@ def get_student_attendance_summary(student_profile):
             'start_date': str(sem.start_date) if sem.start_date else None,
             'end_date': str(sem.end_date) if sem.end_date else None,
             'is_active': sem.is_active,
+            # Their membership: left_at set = a former member (history only, not current)
+            'joined_at': membership.joined_at.isoformat() if membership.joined_at else None,
+            'left_at': membership.left_at.isoformat() if membership.left_at else None,
             'courses': courses_data,
         })
 

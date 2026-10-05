@@ -62,9 +62,18 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   temporary passwords). `importing.py` (admin CSV/XLSX student import). Views: `auth` (login, register,
   logout, me, password change/forgot/reset), `admin` (approvals, students/teachers with partial PATCH,
   restore, import), `student` (semesters summary), `config` (`app/` settings + enum lists).
-- `apps/academic/` Semester, Course, Classroom, StudentClassroom (enrolment), CourseInfo (course + teacher
-  + semester + classroom = one taught class). `views/teacher.py`: teacher's courses, course detail with
-  attendance stats, bulk "history-session" save/delete by date. `views/admin.py`: admin CRUD.
+- `apps/academic/` Semester (`session`, `label`, `sort_semesters()`), Course, Classroom (one hidden
+  "Main" class group per semester), StudentClassroom (membership `joined_at` null = from the start,
+  `left_at` null = current; queryset `current()`, `enrolled_on(day)`, `active_accounts()`,
+  `class_list(semester)` = current members, or everyone once the semester is finished; never delete
+  rows: history), CourseInfo (course + teacher + semester + classroom = one taught class).
+  `services.py`: `main_classroom`, `create_semester`, `join_date` (null before the semester's first
+  class, else today), `add_members`/`remove_members`, `promote` (finishes the source). `stats.py`:
+  `course_numbers()` (held/attended/percent per student inside their membership, class count,
+  average, below-min) and `semester_numbers()`. `views/teacher.py`: teacher's courses, course detail
+  with attendance stats, bulk "history-session" save/delete by date. `views/admin.py`: overview,
+  semesters (finish/reopen/restore, roster, courses taught, promote), courses, course-info list and
+  reassign; older classroom endpoints.
 - `apps/attendance/` AttendanceSession (live QR/fingerprint session) and AttendanceLog (one row per
   student per class; unique per session+student).
   - Live flow: `start` writes the Redis entry first, then the session row → check-ins go to Redis

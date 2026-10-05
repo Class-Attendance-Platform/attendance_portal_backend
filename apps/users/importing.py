@@ -17,7 +17,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.db.models.functions import Lower
 
-from apps.academic.models import Classroom, StudentClassroom
+from apps.academic.services import add_members, join_date, main_classroom
 from apps.users.constants import DEPARTMENT, FACULTY, LEVELS, TERMS
 from apps.users.models import StudentProfile, User
 from apps.users.services import temporary_password, temporary_password_hash
@@ -265,20 +265,10 @@ def plan_import(table):
 # ── Writing ───────────────────────────────────────────────────────────────────
 
 
-def semester_classroom(semester):
-    """The semester's class group ("Main"), made if the semester has none yet."""
-    classrooms = semester.classrooms.filter(deleted=False)
-    classroom = classrooms.filter(name='Main').first() or classrooms.order_by('name').first()
-    if classroom is None:
-        classroom = Classroom.objects.create(name='Main', semester=semester)
-    return classroom
-
-
 def apply_import(to_create, semester=None):
     """Creates the accounts in one transaction. [{student_id, email, temporary_password}]."""
-    created = []
+    created, profiles = [], []
     with transaction.atomic():
-        classroom = semester_classroom(semester) if semester is not None else None
         for row in to_create:
             password = temporary_password()
             user = User.objects.create(
@@ -292,10 +282,11 @@ def apply_import(to_create, semester=None):
                 is_verified=True,
                 password=temporary_password_hash(password),
             )
-            profile = StudentProfile.objects.create(
+            profiles.append(StudentProfile.objects.create(
                 user=user, student_id=row['student_id'], current_level=row['level'], current_semester=row['term'],
-            )
-            if classroom is not None:
-                StudentClassroom.objects.get_or_create(student=profile, classroom=classroom)
+            ))
             created.append({'student_id': row['student_id'], 'email': row['email'], 'temporary_password': password})
+        if semester is not None:
+            # The semester's class group ("Main", made if missing); joined as with the roster's add.
+            add_members(main_classroom(semester), profiles, join_date(semester))
     return created

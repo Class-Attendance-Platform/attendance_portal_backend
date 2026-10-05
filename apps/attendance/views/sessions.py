@@ -195,7 +195,7 @@ class QROnlineCheckinView(APIView):
             )
         if not StudentClassroom.objects.filter(
             student=student, classroom_id=session.course_info.classroom_id
-        ).exists():
+        ).current().exists():
             return Response({'success': False, 'message': 'You are not enrolled in this course.'}, status=403)
 
         # Verify device binding
@@ -247,7 +247,7 @@ class ManualMarkView(APIView):
         student = get_object_or_404(StudentProfile, id=data['student_id'], user__deleted=False)
         if not StudentClassroom.objects.filter(
             student=student, classroom_id=session.course_info.classroom_id
-        ).exists():
+        ).current().exists():
             return Response({'success': False, 'message': 'This student is not in this course.'}, status=400)
 
         log, created = AttendanceLog.objects.update_or_create(
@@ -315,7 +315,7 @@ class ActiveSessionView(APIView):
         enrolled = StudentClassroom.objects.filter(
             student__user=request.user,
             classroom__course_infos__id=uuid,
-        ).exists()
+        ).current().exists()
         if not enrolled:
             return Response({'success': False, 'message': 'No active session.'})
 

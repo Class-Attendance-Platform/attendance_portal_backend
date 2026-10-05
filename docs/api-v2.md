@@ -163,44 +163,82 @@ missing columns, empty, unreadable, over 2 MB or 1000 rows) → 400 `code: "inva
 
 ## 3. Admin: semesters, courses, assignments
 
-A semester has exactly one hidden class group ("Main" classroom), created with it. The UI never
-shows classrooms.
+A semester has exactly one hidden class group ("Main" classroom), created with it (migration
+academic 0003 gives older semesters without one an empty one). The UI never shows classrooms.
+
+**Membership dates.** A student's membership in a class group has `joined_at` (null = from the
+start) and `left_at` (null = current member). It covers the dates `joined_at <= date < left_at`:
+held classes, roll calls, saved sessions and face attendance only count a student on those dates.
+Former members keep their row and their attendance (history stays visible); they are not current
+anywhere (no check-in, live sessions, face matching, "current semester" of the students list).
+**Class list** = who a semester's or course's lists and numbers count (student counts, averages,
+below-minimum counts, the teacher's course students, exports): its current members while the
+semester is active; once it is finished, everyone who was in it (promotion marks them as left).
+Soft-deleted student accounts are left out of rosters, class lists and counts.
 
 Semester row:
 ```
 { id, level, semester, session /* "2025-26" */, label /* "Level 3 · Term I · 2025-26" */,
   start_date, end_date, is_active /* false = finished */, deleted,
-  classroom_id, student_count, course_count }
+  classroom_id, student_count /* class list */, course_count /* not deleted, course not deleted */ }
 ```
-- GET /admin/semesters/ `?status=active|finished|deleted|all` (default all not deleted), ordered:
-  active first, then by session (newest), level, term.
+- GET /admin/semesters/ `?status=all|active|finished|deleted` (`all`, the default = every semester
+  that is not deleted; other values → 400 `code: "invalid_status"`), ordered: active first, then by
+  session (newest; none last), level (First..Fourth), term. GET /admin/semesters/<id>/ →
+  `{success, semester}` (also for a deleted one).
 - POST /admin/semesters/ `{level, semester, session, start_date?, end_date?}` → creates semester +
-  its Main classroom. 400 if an **active** semester with the same level already exists
-  (`code: "level_has_active_semester"`).
-- PATCH /admin/semesters/<id>/ `{session?, start_date?, end_date?}`. DELETE = soft delete.
-- POST /admin/semesters/<id>/finish/, POST /admin/semesters/<id>/reopen/, POST /admin/semesters/<id>/restore/.
+  its Main classroom; 201 `{success, semester}`. 400 if an **active** semester with the same level
+  already exists (`code: "level_has_active_semester"`, "Level 3 already has an active semester.
+  Finish it first."). `level` First|Second|Third|Fourth, `semester` I|II, `session` required
+  ("2025-26"; "2025-2026" and "2025/26" are stored as "2025-26"), `end_date` not before `start_date`.
+- PATCH /admin/semesters/<id>/ `{session?, start_date?, end_date?}` → `{success, semester}` (level and
+  term never change; PUT is accepted as PATCH for the old app, whose `students`/`courses` lists are
+  ignored). DELETE = soft delete (also finishes it) → `{success, message}`. PATCH/DELETE of a deleted
+  semester → 404.
+- POST /admin/semesters/<id>/finish/, POST /admin/semesters/<id>/reopen/ (400
+  `level_has_active_semester` if its level has another active semester), POST
+  /admin/semesters/<id>/restore/ (comes back finished; reopen it if needed). Each →
+  `{success, message, semester}`; finish/reopen of a deleted semester → 404.
 - Roster: GET /admin/semesters/<id>/students/ →
   `{success, students: [{profile_id, student_id, name, email, joined_at, left_at}]}` (current members
-  first; `?include_left=true` adds former ones).
-  POST /admin/semesters/<id>/students/ `{profile_ids: [..]}` → adds (joined_at = today; re-adding a
-  former member clears left_at and keeps the original joined_at).
+  first, each group by student id; `?include_left=true` adds former ones).
+  POST /admin/semesters/<id>/students/ `{profile_ids: [..]}` → adds: joined_at = today once the
+  semester has held a class (a late joiner); before its first class joined_at stays null (= from the
+  start, so classes entered later for earlier dates still count); re-adding a former member clears
+  left_at and keeps the original joined_at. → `{success, message, added, rejoined, already_in}`
+  (counts). An unknown id or a deleted account → 400 (nothing is added). The student's profile
+  level/term is not changed (promote does that).
   POST /admin/semesters/<id>/students/remove/ `{profile_ids: [..]}` → sets left_at = today (history
-  stays visible).
+  stays visible) → `{success, message, removed}`; ids that are not current members are ignored.
+  The import (section 2, `semester_id`) adds students the same way.
 - Courses taught in a semester: GET /admin/semesters/<id>/courses/ →
   `{success, courses: [{course_info_id, course: {id, code, title, credits}, teacher: {id, name} |
-  null}]}`. POST `{course_id, teacher_id}` → creates the CourseInfo on the semester's classroom.
-  PATCH /admin/course-info/<id>/ `{teacher_id}` (reassign; the new teacher sees all history).
-  DELETE /admin/course-info/<id>/ = soft delete.
+  null}]}` (by course code). POST `{course_id, teacher_id}` → creates the CourseInfo on the
+  semester's classroom; 201 `{success, message, course: <row>}`. `teacher_id` may be null or left
+  out (no teacher yet). An unknown/deleted course or teacher → 400 field error; a course already
+  taught in the semester → 400 `code: "course_already_added"`; a course removed from this semester
+  earlier comes back (same `course_info_id`, its attendance kept).
+  PATCH /admin/course-info/<id>/ `{teacher_id}` (reassign; null = no teacher; the new teacher sees
+  all history) → `{success, message, course_info: <row as in the semester's courses>}`.
+  DELETE /admin/course-info/<id>/ = soft delete → `{success, message}`. Both → 404 when deleted.
 - Promote: POST /admin/semesters/<id>/promote/
   `{target: {level, semester, session, start_date?, end_date?} | null, target_semester_id?,
-  profile_ids?: [..] /* default: all current members */}` → uses or creates the target semester,
-  marks the moved students left_at = today on the source and joined_at = today on the target,
+  profile_ids?: [..] /* default: all current members */}` (exactly one of `target` /
+  `target_semester_id`) → uses or creates the target semester (`target` reuses a semester that is
+  not deleted with the same level, term and session; a new one gets 400 `level_has_active_semester`
+  if another active semester of that level exists, the source not counted), marks the moved
+  students left_at = today on the source and adds them to the target like a roster add,
   updates their profile level/term, **finishes the source semester** (never deletes). 200
-  `{success, target_semester_id, moved}`. The old `/admin/classrooms/<id>/promote/` stays but is unused.
+  `{success, message, target_semester_id, moved}`. `profile_ids` must be current members (400
+  otherwise); deleted accounts are not moved; target = source → 400. The old
+  `/admin/classrooms/<id>/promote/` stays but is unused.
 
-Courses: GET/POST /admin/courses/, GET/PATCH/DELETE /admin/courses/<id>/ (as today, PATCH partial),
-`?status=active|deleted`, POST /admin/courses/<id>/restore/. A soft-deleted course is hidden from
-teachers and students too.
+Courses: GET/POST /admin/courses/, GET/PATCH/DELETE /admin/courses/<id>/ (as today, PATCH partial;
+PUT accepted as PATCH), `?status=active|deleted` (others → 400 `invalid_status`), POST
+/admin/courses/<id>/restore/ → `{success, message, course}`. The course row also has `deleted`. Codes
+are unique ignoring capitals ("A course with the code CSE301 already exists." + "It is deleted:
+restore it instead." when it is). DELETE of a deleted course → 404. A soft-deleted course is hidden
+from teachers and students too (and from the semester's courses and the course-info list).
 
 ## 4. Admin: overview and attendance
 
@@ -213,11 +251,21 @@ teachers and students too.
                      mode, present, total}]   // last 10 saved sessions
 }
 ```
+- `counts.students` / `teachers`: approved accounts that are not deleted; `courses`: not deleted.
+- `semesters`: the active ones, in the semesters list's order. A student's percent in a course =
+  attended / held over their class dates (section 6). `average_percent` = mean of every (student,
+  course) percent with held > 0 (one decimal; null when nothing is held); `below_min_count` =
+  students below `ATTENDANCE_MIN_PERCENT` in at least one course.
+- `recent_sessions`: finished sessions of courses that are not deleted, newest saved first;
+  `present` / `total` = its PRESENT logs / all its logs.
+
 The admin opens any course's attendance through the teacher endpoints in section 6 (admins pass
 `can_manage_course`); the admin UI is read-only there. List of all taught courses:
-GET /admin/course-info/ (exists) with `?semester_id=`; row
-`{id, course: {code, title}, teacher: {id, name} | null, semester: {id, label, is_active},
-student_count, classes_held, average_percent}`.
+GET /admin/course-info/ (exists) with `?semester_id=` (not a valid id → 400); key `course_infos`; row
+`{id, course: {id, code, title}, teacher: {id, name} | null, semester: {id, label, is_active},
+student_count, classes_held, average_percent}` (class list; classes_held = class dates; average as
+above, null without classes). Leaves out deleted course-infos, courses and semesters; ordered like
+the semesters list, then by course code.
 
 ## 5. Live attendance sessions (rotating code)
 
@@ -316,7 +364,9 @@ Deletes that date's classes and logs (the UI asks for confirmation).
 Only the student's **own** class group's courses; semesters sorted by level then term (First,
 Second, Third, Fourth; I, II); percentages count from `joined_at`. Per course adds
 `{course_info_id, held, attended, percent, below_min, classes_needed /* to reach the minimum; 0 if
-already there */}` and per semester `{label, is_active, overall_percent}`.
+already there */}` and per semester `{label, is_active, overall_percent, joined_at, left_at}`
+(their membership: semesters they left are still listed, with `left_at` set = history only, not
+current).
 
 ### GET /student/course-info/<id>/
 `{success, course: {course_info_id, code, title, credits, teacher_name, semester: {label,
@@ -336,7 +386,8 @@ for the signed-in student only (403 if not theirs).
 - users: data migration sets `is_verified = true` for every existing user (they are already using
   the app). Admin-created and imported users are created verified.
 - academic: `Semester.session` (CharField, blank); `StudentClassroom.joined_at` (DateField, null =
-  "from the start", which is what existing rows get) and `left_at` (null).
+  "from the start", which is what existing rows get) and `left_at` (null) (0002); data migration
+  0003 gives every semester without a class group an empty "Main" one.
 - attendance: `AttendanceSession.delivery` (IN_CLASS default); `AttendanceLog.changed_by` (FK user,
   null, SET_NULL) and `changed_at` (null); new `AttendanceChange` (log FK, old_status, new_status,
   changed_by, changed_at).
