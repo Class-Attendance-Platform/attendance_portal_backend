@@ -103,9 +103,11 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
     (change only differing logs, keep their method, record AttendanceChange rows).
 - `apps/hardware/` ESP32 fingerprint devices (`X-Hardware-Key` header auth), enrolment requests.
 - `apps/reports/` export `?format=csv|xlsx|pdf|docx&date=` (`views/reports.py` reads `format` itself:
-  DRF would treat it as a renderer). `generators.py`: `build_report()` (class list, one column per class
-  date, blank outside a student's membership, numbers from `course_numbers()`, Dhaka time); PDF/DOCX
-  split the dates into page-wide parts (`date_chunks()`) that repeat ID, name and %.
+  DRF would treat it as a renderer). The file name is in `Content-Disposition`; `base.py`'s
+  `CORS_EXPOSE_HEADERS` lets the web app (another origin) read it. `generators.py`: `build_report()`
+  (class list, one column per class date, blank outside a student's membership, numbers from
+  `course_numbers()`, Dhaka time); PDF/DOCX split the dates into page-wide parts (`date_chunks()`)
+  that repeat ID, name and %.
 - `apps/faces/` face attendance (`/api/faces/`). `engines/`: `get_engine()` picks `settings.FACE_ENGINE`;
   `insightface_onnx.py` runs InsightFace buffalo_l (SCRFD detector + ArcFace) with onnxruntime + OpenCV
   (no `insightface` package). `services.py`: `register_student_faces` (3 poses, one face each, same person,
