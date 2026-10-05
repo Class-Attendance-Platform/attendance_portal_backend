@@ -7,6 +7,7 @@ class AttendanceSession(models.Model):
         FINGERPRINT  = 'FINGERPRINT',  'Fingerprint'
         QR_ONLINE    = 'QR_ONLINE',    'QR Online'
         QR_OFFLINE   = 'QR_OFFLINE',   'QR Offline'
+        FACE         = 'FACE',         'Face'
 
     id             = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     course_info    = models.ForeignKey(
@@ -39,6 +40,7 @@ class AttendanceLog(models.Model):
         QR_ONLINE   = 'QR_ONLINE',   'QR Online'
         QR_OFFLINE  = 'QR_OFFLINE',  'QR Offline'
         MANUAL      = 'MANUAL',      'Manual'
+        FACE        = 'FACE',        'Face'
 
     id          = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session     = models.ForeignKey(

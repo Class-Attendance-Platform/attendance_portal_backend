@@ -8,17 +8,55 @@ Key schema:
       end_time       : float  (unix timestamp),
       submissions    : { "<student_id_int>": {"name": str, "mac": str} }
   }
-TTL = duration_seconds + 120 buffer
+
+Check-ins are accepted until end_time. The data is kept for a grace period
+after that so the session can still be saved (see services.finalize_session)
+even if the teacher stops it late or closes the app.
 """
 import json
+import threading
 import time
+from contextlib import contextmanager
+
 from django.core.cache import cache
+from redis.exceptions import LockError
 
 PREFIX = 'session'
+GRACE_SECONDS = 7 * 24 * 60 * 60
+
+_local_lock = threading.Lock()  # used when the cache has no locks (tests, local preview)
+
+
+class SessionBusy(Exception):
+    """The session is being updated by many requests at once; try again."""
 
 
 def _key(session_id: str) -> str:
     return f'{PREFIX}:{session_id}'
+
+
+@contextmanager
+def _lock(session_id: str):
+    """
+    Serialises read-modify-write of one session, so two students checking in
+    at the same moment cannot overwrite each other's submission.
+    Raises SessionBusy if the lock cannot be taken within a few seconds.
+    """
+    make_lock = getattr(cache, 'lock', None)  # django-redis provides this
+    if make_lock is None:
+        with _local_lock:
+            yield
+        return
+    lock = make_lock(f'{_key(session_id)}:lock', timeout=10, sleep=0.02, blocking_timeout=5)
+    if not lock.acquire():
+        raise SessionBusy()
+    try:
+        yield
+    finally:
+        try:
+            lock.release()
+        except LockError:
+            pass  # held longer than its timeout; the write itself already happened
 
 
 def create_session_cache(session_id: str, course_info_id: str, mode: str, duration_seconds: int):
@@ -28,44 +66,58 @@ def create_session_cache(session_id: str, course_info_id: str, mode: str, durati
         'end_time': time.time() + duration_seconds,
         'submissions': {},
     }
-    cache.set(_key(session_id), json.dumps(data), timeout=duration_seconds + 120)
+    cache.set(_key(session_id), json.dumps(data), timeout=duration_seconds + GRACE_SECONDS)
 
 
 def get_session_cache(session_id: str) -> dict | None:
+    """The live session data, also after end_time (None once saved or gone)."""
     raw = cache.get(_key(session_id))
     if raw is None:
         return None
-    data = json.loads(raw)
-    # Auto-expire if past end_time
-    if time.time() > data['end_time']:
-        cache.delete(_key(session_id))
-        return None
-    return data
+    return json.loads(raw)
+
+
+def is_open(data: dict | None) -> bool:
+    """True while the session still accepts check-ins."""
+    return bool(data) and time.time() <= data['end_time']
 
 
 def add_submission(session_id: str, student_int_id: int, student_name: str, mac: str) -> bool:
     """
-    Returns True if successfully added, False if session not found / already submitted.
+    Returns True if successfully added, False if session closed / already submitted.
+    Raises SessionBusy when too many check-ins arrive at once.
     """
-    raw = cache.get(_key(session_id))
-    if not raw:
-        return False
-    data = json.loads(raw)
-    if time.time() > data['end_time']:
-        cache.delete(_key(session_id))
-        return False
-    key = str(student_int_id)
-    if key in data['submissions']:
-        return False   # already submitted
-    data['submissions'][key] = {'name': student_name, 'mac': mac}
-    ttl = max(int(data['end_time'] - time.time()) + 120, 60)
-    cache.set(_key(session_id), json.dumps(data), timeout=ttl)
-    return True
+    with _lock(session_id):
+        data = get_session_cache(session_id)
+        if not is_open(data):
+            return False
+        key = str(student_int_id)
+        if key in data['submissions']:
+            return False   # already submitted
+        data['submissions'][key] = {'name': student_name, 'mac': mac}
+        ttl = max(int(data['end_time'] - time.time()), 0) + GRACE_SECONDS
+        cache.set(_key(session_id), json.dumps(data), timeout=ttl)
+        return True
 
 
 def get_submissions(session_id: str) -> dict:
     data = get_session_cache(session_id)
     return data['submissions'] if data else {}
+
+
+def close_session(session_id: str) -> dict:
+    """
+    Stops new check-ins and returns the submissions. The data stays until
+    delete_session_cache(), so nothing is lost if saving them fails.
+    """
+    with _lock(session_id):
+        data = get_session_cache(session_id)
+        if not data:
+            return {}
+        if is_open(data):
+            data['end_time'] = time.time() - 1
+            cache.set(_key(session_id), json.dumps(data), timeout=GRACE_SECONDS)
+        return data['submissions']
 
 
 def time_left(session_id: str) -> int:

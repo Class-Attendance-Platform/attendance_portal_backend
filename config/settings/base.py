@@ -26,7 +26,7 @@ INSTALLED_APPS = [
     'apps.attendance',
     'apps.hardware',
     'apps.reports',
-    
+    'apps.faces',
 ]
 
 MIDDLEWARE = [
@@ -69,7 +69,8 @@ DATABASES = {
         'HOST': config('DB_HOST'),
         'PORT': config('DB_PORT', default='5432'),
         'OPTIONS': {
-            'sslmode': 'require',
+            # "require" for hosted databases (Neon); "disable" for PostgreSQL on the same server
+            'sslmode': config('DB_SSLMODE', default='require'),
         },
     }
 }
@@ -123,18 +124,31 @@ SIMPLE_JWT = {
 }
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
+REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://localhost:6379/0'),
+        'LOCATION': REDIS_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            'CONNECTION_POOL_KWARGS': {
-                'ssl_cert_reqs': None,  # Required for Upstash TLS
-            },
+            # TLS (rediss://, e.g. Upstash) needs this; a plain local redis:// must not get it
+            'CONNECTION_POOL_KWARGS': {'ssl_cert_reqs': None} if REDIS_URL.startswith('rediss://') else {},
         }
     }
 }
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True  # Tighten in production
+
+# ── Face attendance ───────────────────────────────────────────────────────────
+# Engine "insightface" = InsightFace buffalo_l models via onnxruntime
+# (download with `python manage.py download_face_models`).
+FACE_ENGINE = config('FACE_ENGINE', default='insightface')
+FACE_MODEL_DIR = Path(config('FACE_MODEL_DIR', default=str(BASE_DIR / 'face_models')))
+# Similarity scores run from -1 to 1 (same person usually 0.6+, strangers below 0.2).
+FACE_MATCH_THRESHOLD = config('FACE_MATCH_THRESHOLD', default=0.45, cast=float)        # present
+FACE_UNSURE_THRESHOLD = config('FACE_UNSURE_THRESHOLD', default=0.30, cast=float)      # teacher checks
+FACE_SAME_PERSON_THRESHOLD = config('FACE_SAME_PERSON_THRESHOLD', default=0.35, cast=float)  # 3 sign-up shots
+FACE_DUPLICATE_THRESHOLD = config('FACE_DUPLICATE_THRESHOLD', default=0.50, cast=float)  # face already taken
+FACE_DETECTION_THRESHOLD = config('FACE_DETECTION_THRESHOLD', default=0.50, cast=float)
+FACE_CLASS_PHOTO_MAX_SIDE = config('FACE_CLASS_PHOTO_MAX_SIDE', default=1920, cast=int)

@@ -104,12 +104,15 @@ class HardwareSyncView(APIView):
             return Response({'success': False, 'message': 'No active fingerprint session for this course.'}, status=404)
 
         # Add to Redis
-        added = redis_service.add_submission(
-            session_id=str(session.id),
-            student_int_id=student.student_id,
-            student_name=student.user.get_full_name(),
-            mac='hardware',
-        )
+        try:
+            added = redis_service.add_submission(
+                session_id=str(session.id),
+                student_int_id=student.student_id,
+                student_name=student.user.get_full_name(),
+                mac='hardware',
+            )
+        except redis_service.SessionBusy:
+            return Response({'success': False, 'message': 'Busy, please scan again.'}, status=503)
 
         if not added:
             return Response({
