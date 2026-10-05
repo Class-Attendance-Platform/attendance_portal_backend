@@ -4,7 +4,10 @@ from .models import AttendanceSession, AttendanceLog
 
 class StartSessionSerializer(serializers.Serializer):
     course_info_id   = serializers.UUIDField()
-    mode             = serializers.ChoiceField(choices=AttendanceSession.Mode.choices)
+    # Live sessions only; face attendance is saved through /api/faces/confirm/
+    mode             = serializers.ChoiceField(
+        choices=[c for c in AttendanceSession.Mode.choices if c[0] != AttendanceSession.Mode.FACE]
+    )
     duration_seconds = serializers.IntegerField(min_value=30, max_value=7200, default=300)
 
 
@@ -15,7 +18,8 @@ class ManualMarkSerializer(serializers.Serializer):
 
 
 class QRCheckinSerializer(serializers.Serializer):
-    student_id  = serializers.IntegerField()      # numeric student_id e.g. 2302001
+    # Optional: the logged-in student is used; if sent, it must be their own id.
+    student_id  = serializers.IntegerField(required=False)  # numeric student_id e.g. 2302001
     mac_address = serializers.CharField(max_length=17)
     qr_token    = serializers.CharField()
 
