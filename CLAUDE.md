@@ -41,7 +41,9 @@ python manage.py runserver --settings=config.settings.test
 python manage.py download_face_models                    # or --zip <path to buffalo_l.zip>
 python manage.py check_face_engine <photo.jpg> --settings=config.settings.test
 ```
-Demo logins: `admin@demo.local`, `teacher@demo.local`, `student2302001@demo.local` (…002, …003).
+Demo logins: `admin@demo.local`, `teacher@demo.local`, `teacher2@demo.local`,
+`student2302001@demo.local` … `student2302012@demo.local` (012 joined late); waiting for approval:
+`pending.student@demo.local`, `pending.teacher@demo.local`; soft-deleted: `student2302013@demo.local`.
 Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 
 ## Code map
@@ -54,7 +56,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - API contract for the redesign: `docs/api-v2.md` (source of truth; change it with the code).
 - `apps/users/` User (UUID pk, email login, `role` STUDENT/TEACHER/ADMIN), Student/Teacher/AdminProfile,
   DeviceBinding. Sign-up waits for admin approval (`is_verified`; admins never wait). Commands:
-  `seed_local_demo` (local SQLite only), `remove_user <email>` (dry run; `--apply` blocks its login
+  `seed_local_demo` (local SQLite only; dry run, `--apply`: the demo logins, an active semester with
+  3 courses and ~10 past class dates of every method, a finished one, pending and deleted accounts;
+  dates counted back from today; safe to run again), `remove_user <email>` (dry run; `--apply` blocks its login
   tokens, then deletes; refuses the last active admin), `cleanup_broken_signups` (accounts without a
   profile; dry run, `--apply`). `permissions.py`: role classes + `can_manage_course(user, course_info)`
   (admin, or the course's own teacher) + `not_your_course_response()`. `throttles.py` (login, register,
@@ -95,7 +99,10 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
     semesters summary and course detail); `services.py` also has `correct_attendance` and `roll_call`
     (change only differing logs, keep their method, record AttendanceChange rows).
 - `apps/hardware/` ESP32 fingerprint devices (`X-Hardware-Key` header auth), enrolment requests.
-- `apps/reports/` export csv/xlsx/pdf/docx (`generators.py`).
+- `apps/reports/` export `?format=csv|xlsx|pdf|docx&date=` (`views/reports.py` reads `format` itself:
+  DRF would treat it as a renderer). `generators.py`: `build_report()` (class list, one column per class
+  date, blank outside a student's membership, numbers from `course_numbers()`, Dhaka time); PDF/DOCX
+  split the dates into page-wide parts (`date_chunks()`) that repeat ID, name and %.
 - `apps/faces/` face attendance (`/api/faces/`). `engines/`: `get_engine()` picks `settings.FACE_ENGINE`;
   `insightface_onnx.py` runs InsightFace buffalo_l (SCRFD detector + ArcFace) with onnxruntime + OpenCV
   (no `insightface` package). `services.py`: `register_student_faces` (3 poses, one face each, same person,
@@ -112,9 +119,14 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   (one command per block: database + Neon copy, backend, web build, nginx/certbot, app releases).
 
 ## Conventions
+- API v2 (`docs/api-v2.md`) is the contract: change it in the same commit as the code.
 - Class-based `APIView`s returning `{'success': bool, ...}`; errors via `config/errors.py` helpers:
-  `{'success': False, 'message', 'code'?, 'errors'?}` (`message` always present).
+  `{'success': False, 'message', 'code'?, 'errors'?}` (`message` always present, one plain sentence).
 - Frontend expects some camelCase keys (`userName`, `attendanceMap`, `presentStudents`): don't rename.
+  New keys are snake_case. Dates `YYYY-MM-DD` (local), date-times ISO 8601 with offset.
+- Students are counted only inside their membership (`joined_at <= date < left_at`) and on the class
+  list; soft-deleted accounts (`user.deleted`) are left out of lists and numbers. Never hard-delete
+  students, semesters or courses from the API: soft delete / `left_at`, history stays.
 - Teacher-facing course endpoints must check `can_manage_course` and return `not_your_course_response()`.
 - Times: use `timezone.localdate()` / `timezone.localtime()` (TIME_ZONE is Asia/Dhaka).
 - One class = one date: stats, student summary and exports count a student present on a date if any

@@ -316,15 +316,70 @@ cd /var/www/attendanceportal-backend && venv/bin/python manage.py cleanup_broken
 
 Then the same with `--apply` to remove them.
 
-## Password reset by email (Gmail)
+## Email for password reset
 
-Off until `EMAIL_HOST_USER` is set (admins can always reset a password from the admin pages).
-Create a Gmail "app password" (Google account → Security → 2-Step Verification → App passwords),
-then add to the backend `.env` (see `.env.example`) `EMAIL_HOST_USER=<gmail address>`,
-`EMAIL_HOST_PASSWORD=<app password>` and `WEB_URL=https://attendanceportal.sakibkx.tech`, and restart:
+"Forgot password" sends a reset link by email through a Gmail account. It is off until
+`EMAIL_HOST_USER` is set; meanwhile the app tells people to ask an admin, and admins can always
+set a temporary password on the admin pages.
+
+1. Pick the Gmail account that sends the emails (a separate one for the portal is best) and sign
+   in to it in a browser.
+2. Turn on 2-Step Verification: Google Account → Security → 2-Step Verification. App passwords
+   need it.
+3. Open https://myaccount.google.com/apppasswords, type a name such as `Attendance Portal` and
+   press Create. Google shows a 16-letter app password once: copy it. It only lets the portal send
+   mail; it is not your Gmail login password. Remove it on the same page to switch email off.
+4. Put it in the backend `.env` (on the server, as root):
+
+```bash
+cd /var/www/attendanceportal-backend && nano .env
+```
+
+Fill in these lines (they are already in the file if it came from `.env.example`). Type the 16
+letters without spaces; keep comments on their own lines (text after a value becomes part of it):
+
+```
+EMAIL_HOST_USER=<gmail address>
+EMAIL_HOST_PASSWORD=<16-letter app password>
+WEB_URL=https://attendanceportal.sakibkx.tech
+```
+
+Restart the API so it reads `.env` again:
 
 ```bash
 sudo systemctl restart attendanceportal-api
+```
+
+Send yourself a test email (use your own address; it should arrive within a minute):
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py sendtestemail you@example.com --settings=config.settings.production
+```
+
+If it fails, the error names the problem (usually a mistyped address or app password). The reset
+links point to `WEB_URL` and work for one day, once.
+
+## Update notes: API v2 (the redesign)
+
+This release changes the database, so `migrate` is needed (the backend update command above runs
+it). Existing accounts are marked approved; new sign-ups wait for an admin (Approvals page). Every
+semester gets its hidden class group. The service file and the nginx files did not change.
+
+1. Backend: pull, install, migrate, restart:
+
+```bash
+cd /var/www/attendanceportal-backend && git pull && venv/bin/pip install -r requirements.txt && venv/bin/python manage.py migrate --settings=config.settings.production && venv/bin/python manage.py collectstatic --noinput --settings=config.settings.production && sudo systemctl restart attendanceportal-api
+```
+
+2. New `.env` keys are optional (the defaults are fine): `WEB_URL`, `MIN_APP_VERSION`,
+   `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT`, the request limits and email (see
+   "Email for password reset" and `.env.example`). Restart the API after changing `.env`.
+3. Accounts left half-made by the old sign-up page: run the dry run in "Broken sign-ups" above,
+   send the output, then the same with `--apply`.
+4. Web app: rebuild it:
+
+```bash
+cd /var/www/attendanceportal-frontend && git pull && npm ci && npm run build:web
 ```
 
 ## Troubleshooting

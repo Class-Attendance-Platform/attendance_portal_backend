@@ -425,6 +425,17 @@ outside their membership; `changed` = a teacher corrected it.
   Fixes: generated time in Asia/Dhaka; join dates respected (not enrolled = blank, not absent); the
   PDF splits the date grid across pages so ID, name and % are always visible; header has course,
   semester label, department and teacher.
+  Details: `format` defaults to xlsx (the old app's `export_format` still works); another value →
+  400 `code: "invalid_format"`, a bad `date` → 400 `invalid_date`; 404 / 403 as in section 6 (admins
+  may export any course). Rows = the course's class list by student id; one column per class date
+  (oldest first): PRESENT / ABSENT, blank outside the student's membership; then held, present and
+  percent counted as in section 6 (none held = blank / "-"). With `date`: one Status column (blank
+  also when that date had no class). PDF and DOCX (landscape A4) show P / A with a legend and
+  split the dates into pages of about 15, each repeating #, student ID, name, held, present and %
+  (below the minimum in red); the header block (course, semester label, department, teacher,
+  classes, generated time) is on the first page and a short running header on the others. XLSX has
+  the same header block and keeps #, ID, name and email in view while scrolling. **CSV stays a
+  plain table** (one header row, full words) so it opens cleanly in other programs.
 
 ## 9. Data changes (migrations, append-only)
 
