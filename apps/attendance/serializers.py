@@ -45,3 +45,5 @@ class CorrectionSerializer(serializers.Serializer):
 class RollCallSerializer(serializers.Serializer):
     date               = serializers.DateField()
     present_profile_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=True)
+    # The `version` of the roll call list the page showed (GET .../roll-call/?date=); optional
+    version            = serializers.CharField(required=False, allow_blank=False, max_length=64)

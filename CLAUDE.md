@@ -61,9 +61,11 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   dates counted back from today; safe to run again), `remove_user <email>` (dry run; `--apply` blocks its login
   tokens, then deletes; refuses the last active admin), `cleanup_broken_signups` (accounts without a
   profile; dry run, `--apply`). `permissions.py`: role classes + `can_manage_course(user, course_info)`
-  (admin, or the course's own teacher) + `not_your_course_response()`. `throttles.py` (login, register,
-  password forgot per IP; check-in per user). `services.py` (tokens, blocking tokens, reset emails,
-  temporary passwords). `importing.py` (admin CSV/XLSX student import). Views: `auth` (login, register,
+  (admin, or the course's own teacher) + `not_your_course_response()`. `throttles.py` (login and register per IP +
+  email with a wide per-IP cap; password forgot per IP; check-in per user). `services.py` (tokens,
+  blocking tokens, reset emails, temporary passwords). `jwt.py`: tokens carry a password fingerprint
+  (`CHECK_REVOKE_TOKEN`): a password change/reset ends other devices' access tokens at once; the refresh
+  serializer gives older refresh tokens the fingerprint. `importing.py` (admin CSV/XLSX student import). Views: `auth` (login, register,
   logout, me, password change/forgot/reset), `admin` (approvals, students/teachers with partial PATCH,
   restore, import), `student` (semesters summary), `config` (`app/` settings + enum lists).
 - `apps/academic/` Semester (`session`, `label`, `sort_semesters()`), Course, Classroom (one hidden
@@ -79,7 +81,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   average, below-min) and `semester_numbers()`. Command `backfill_join_dates` (dry run, `--apply`):
   join dates for students added mid-semester under the old app, guessed from their first log.
   `views/teacher.py`: teacher's courses (current/previous with numbers, face counts, live session), course detail, one student's days, live lookup,
-  single-student correction (PUT `attendance/`), roll call, delete a date. `views/admin.py`: overview,
+  single-student correction (PUT `attendance/`), roll call (GET = who is enrolled that date + a
+  `version`; POST refuses while a live session runs that day, and with a stale `version`), delete a date.
+  No new live or face sessions for finished semesters (`semester_finished`); roll call and corrections stay. `views/admin.py`: overview,
   semesters (finish/reopen/restore, roster, courses taught, promote), courses, course-info list and
   reassign; older classroom endpoints.
 - `apps/attendance/` AttendanceSession (live session; `delivery` IN_CLASS/ONLINE; `qr_token` = the

@@ -16,7 +16,9 @@ from apps.users.services import (
     blacklist_refresh_tokens, can_sign_in, email_reset_enabled, find_user_by_email, is_approved,
     send_password_reset_email, tokens_for, user_from_reset_link,
 )
-from apps.users.throttles import LoginIPThrottle, LoginThrottle, PasswordForgotThrottle, RegisterThrottle
+from apps.users.throttles import (
+    LoginIPThrottle, LoginThrottle, PasswordForgotThrottle, RegisterIPThrottle, RegisterThrottle,
+)
 from config.errors import error_response, validation_error_response
 
 User = get_user_model()
@@ -57,7 +59,7 @@ class LoginView(PublicView):
 
 
 class RegisterView(PublicView):
-    throttle_classes = [RegisterThrottle]
+    throttle_classes = [RegisterThrottle, RegisterIPThrottle]
 
     def post(self, request):
         serializer = NewAccountSerializer(data=request.data)

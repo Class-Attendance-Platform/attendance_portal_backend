@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.academic.models import CourseInfo
+from apps.attendance.views.sessions import semester_finished_response
 from apps.faces import services
 from apps.faces.engines import FaceEngineUnavailable
 from apps.faces.models import StudentFace
@@ -15,6 +16,7 @@ from apps.users.models import StudentProfile
 from apps.users.permissions import (
     IsAdmin, IsAdminOrTeacher, IsStudent, can_manage_course, not_your_course_response,
 )
+from config.errors import error_response
 
 logger = logging.getLogger(__name__)
 MAX_CLASS_PHOTOS = 3
@@ -35,12 +37,28 @@ def run_face_task(task):
 
 
 def _course(request):
-    """The course named by course_info_id, or None if the id is missing or malformed."""
+    """
+    The course named by course_info_id, or None if the id is missing or malformed, or the
+    course-info, its course or its semester is deleted.
+    """
     try:
         course_id = uuid_lib.UUID(str(request.data.get('course_info_id')))
     except ValueError:
         return None
-    return CourseInfo.objects.filter(id=course_id, deleted=False).first()
+    return CourseInfo.objects.select_related('semester').filter(
+        id=course_id, deleted=False, course__deleted=False, semester__deleted=False,
+    ).first()
+
+
+def _course_error(request, ci):
+    """An error response if the course can't take face attendance for this user, else None."""
+    if ci is None:
+        return error_response('Course not found.', status=404, code='not_found')
+    if not can_manage_course(request.user, ci):
+        return not_your_course_response()
+    if not ci.semester.is_active:
+        return semester_finished_response()
+    return None
 
 
 def _profile(request):
@@ -116,10 +134,9 @@ class RecognizeClassView(APIView):
 
     def post(self, request):
         ci = _course(request)
-        if ci is None:
-            return Response({'success': False, 'message': 'Course not found.'}, status=404)
-        if not can_manage_course(request.user, ci):
-            return not_your_course_response()
+        error = _course_error(request, ci)
+        if error:
+            return error
         photos = request.FILES.getlist('photos')
         if not 1 <= len(photos) <= MAX_CLASS_PHOTOS:
             return Response(
@@ -134,10 +151,9 @@ class ConfirmFaceAttendanceView(APIView):
 
     def post(self, request):
         ci = _course(request)
-        if ci is None:
-            return Response({'success': False, 'message': 'Course not found.'}, status=404)
-        if not can_manage_course(request.user, ci):
-            return not_your_course_response()
+        error = _course_error(request, ci)
+        if error:
+            return error
         present_ids = request.data.get('present_student_ids', [])
         if not isinstance(present_ids, list):
             return Response({'success': False, 'message': 'present_student_ids must be a list.'}, status=400)

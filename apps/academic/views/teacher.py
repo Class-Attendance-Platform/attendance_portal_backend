@@ -18,8 +18,8 @@ from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.records import course_days, count_days, day_status, log_details, parse_day, percent
 from apps.attendance.serializers import CorrectionSerializer, RollCallSerializer
 from apps.attendance.services import (
-    correct_attendance, finalize_ended_sessions, finalize_expired_sessions, live_session, live_sessions,
-    roll_call, session_payload,
+    DateChanged, correct_attendance, finalize_ended_sessions, finalize_expired_sessions, live_session,
+    live_sessions, roll_call, roll_call_list, roll_call_version, session_payload,
 )
 from apps.faces.models import StudentFace
 from apps.users.models import TeacherProfile
@@ -240,9 +240,58 @@ class TeacherAttendanceCorrectionView(APIView):
         })
 
 
+def live_session_on(ci, day):
+    """The course's live session on that date (still taking check-ins), or None."""
+    found = live_sessions(AttendanceSession.objects.filter(course_info=ci, date=day))
+    return found[0][0] if found else None
+
+
+def session_running_response(session):
+    return error_response(
+        'A live session is running on this date. Mark students present in the session, or stop it first.',
+        status=409, code='session_running', session_id=str(session.id),
+    )
+
+
 class TeacherRollCallView(APIView):
-    """POST {date, present_profile_ids}: saves a roll call (creates the class if missing)."""
+    """
+    GET ?date=: whom a roll call for that date covers (everyone enrolled that day, former members
+    too) with their status. POST {date, present_profile_ids, version?}: saves a roll call
+    (creates the class if missing).
+    """
     permission_classes = [IsAdminOrTeacher]
+
+    def get(self, request, uuid):
+        ci, error = teacher_course(request, uuid)
+        if error:
+            return error
+        day = parse_day(request.query_params.get('date', ''))
+        if day is None:
+            return validation_error_response({'date': ['Use a YYYY-MM-DD date.']})
+        if day > timezone.localdate():
+            return future_date_response()
+
+        finalize_expired_sessions(ci)
+        session = live_session_on(ci, day)
+        rows = roll_call_list(ci, day)
+        return Response({
+            'success': True,
+            'date': day.isoformat(),
+            'has_class': AttendanceLog.objects.filter(course_info=ci, date=day).exists(),
+            'live_session_id': str(session.id) if session else None,
+            'version': roll_call_version(rows),
+            'students': [
+                {
+                    'profile_id': str(m.student_id),
+                    'student_id': m.student.student_id,
+                    'name': person_name(m.student.user),
+                    'joined_at': iso_date(m.joined_at),
+                    'left_at': iso_date(m.left_at),
+                    'status': status,
+                }
+                for m, status in rows
+            ],
+        })
 
     def post(self, request, uuid):
         ci, error = teacher_course(request, uuid)
@@ -257,10 +306,19 @@ class TeacherRollCallView(APIView):
             return future_date_response()
 
         finalize_expired_sessions(ci)
-        counts = roll_call(ci, day, data['present_profile_ids'], request.user)
+        session = live_session_on(ci, day)
+        if session is not None:
+            return session_running_response(session)
+        try:
+            counts = roll_call(ci, day, data['present_profile_ids'], request.user, data.get('version'))
+        except DateChanged:
+            return error_response(
+                'This date changed since you opened it. Check the list and save again.',
+                status=409, code='date_changed',
+            )
         return Response({
             'success': True,
-            'message': f'Roll call saved for {day.isoformat()}.',
+            'message': f'Roll call saved for {day:%d %b %Y}.',
             'date': day.isoformat(),
             **counts,
         })
@@ -292,6 +350,6 @@ class TeacherDeleteDateView(APIView):
 
         return Response({
             'success': True,
-            'message': f'Attendance for {day.isoformat()} deleted. {deleted_count} logs removed.',
+            'message': f'The class on {day:%d %b %Y} was deleted.',
             'deleted': deleted_count,
         })

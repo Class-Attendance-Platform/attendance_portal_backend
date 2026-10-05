@@ -279,6 +279,103 @@ class RollCallTests(TeacherTestCase):
                          400)
 
 
+class RollCallListTests(TeacherTestCase):
+    """GET .../roll-call/?date=: whom a roll call covers, and the checks before saving it."""
+
+    def roll_list(self, day):
+        return self.client.get(self.url(f'roll-call/?date={day.isoformat()}'))
+
+    def save(self, day, present, version=None):
+        body = {'date': day.isoformat(), 'present_profile_ids': [str(s.id) for s in present]}
+        if version is not None:
+            body['version'] = version
+        return self.client.post(self.url('roll-call/'), body, format='json')
+
+    def test_lists_everyone_enrolled_that_day_with_their_status(self):
+        res = self.roll_list(D2)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual((res.data['date'], res.data['has_class'], res.data['live_session_id']), ('2026-09-02', True, None))
+        self.assertEqual([(s['student_id'], s['status']) for s in res.data['students']],
+                         [(2302001, 'PRESENT'), (2302002, 'ABSENT')])  # late joined on D3
+        self.assertTrue(res.data['version'])
+        empty = self.roll_list(datetime.date(2026, 9, 7))
+        self.assertFalse(empty.data['has_class'])
+        self.assertEqual([s['status'] for s in empty.data['students']], [None, None, None])
+
+    def test_a_student_who_left_since_is_listed_for_earlier_dates(self):
+        StudentClassroom.objects.filter(student=self.b).update(left_at=datetime.date(2026, 9, 10))
+        day = datetime.date(2026, 9, 7)
+        res = self.roll_list(day)
+        row = next(s for s in res.data['students'] if s['student_id'] == 2302002)
+        self.assertEqual((row['left_at'], row['status']), ('2026-09-10', None))
+        saved = self.save(day, [self.a, self.b, self.late], res.data['version'])
+        self.assertEqual(saved.status_code, 200, saved.data)
+        self.assertEqual(saved.data['present'] + saved.data['absent'], len(res.data['students']))
+        self.assertEqual(saved.data['present'], 3)
+        # Not on dates after they left
+        later = self.roll_list(datetime.date(2026, 9, 11))
+        self.assertNotIn(2302002, [s['student_id'] for s in later.data['students']])
+
+    def test_bad_or_future_date(self):
+        self.assertEqual(self.client.get(self.url('roll-call/?date=someday')).status_code, 400)
+        self.assertEqual(self.client.get(self.url('roll-call/')).status_code, 400)
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        self.assertEqual(self.roll_list(tomorrow).data['code'], 'future_date')
+
+    def test_other_teacher(self):
+        other = client_for(make_teacher('other@example.com').user)
+        res = other.get(self.url(f'roll-call/?date={D2.isoformat()}'))
+        self.assertEqual((res.status_code, res.data['code']), (403, 'permission_denied'))
+
+    def test_the_version_stops_a_stale_page_from_overwriting(self):
+        version = self.roll_list(D4).data['version']
+        # Meanwhile b is corrected to present in the history
+        self.client.put(self.url('attendance/'), {
+            'date': D4.isoformat(), 'profile_id': str(self.b.id), 'status': 'PRESENT',
+        }, format='json')
+        res = self.save(D4, [self.a, self.late], version)
+        self.assertEqual((res.status_code, res.data['code']), (409, 'date_changed'))
+        self.assertEqual(res.data['message'], 'This date changed since you opened it. Check the list and save again.')
+        self.assertEqual(AttendanceLog.objects.get(date=D4, student=self.b).status, 'PRESENT')  # not overwritten
+        # With the newest version it saves
+        fresh = self.roll_list(D4).data['version']
+        self.assertEqual(self.save(D4, [self.a, self.late], fresh).status_code, 200)
+        # Without a version (older apps) it saves as before
+        self.assertEqual(self.save(D4, [self.a, self.b, self.late]).status_code, 200)
+
+    def test_a_session_saved_after_the_page_loaded_is_not_overwritten(self):
+        start_session(self.client, self.ci)
+        today = timezone.localdate()
+        version = self.roll_list(today).data['version']  # the page opened while the session ran
+        session = AttendanceSession.objects.get(date=today)
+        from apps.attendance.tests.helpers import check_in
+        self.assertEqual(check_in(self.a, session.id).status_code, 200)
+        self.assertEqual(self.client.post(f'/api/sessions/{session.id}/stop/').status_code, 200)
+        res = self.save(today, [self.b], version)
+        self.assertEqual((res.status_code, res.data['code']), (409, 'date_changed'))
+        self.assertEqual(AttendanceLog.objects.get(date=today, student=self.a).status, 'PRESENT')
+
+    def test_not_while_a_live_session_runs_that_day(self):
+        session_id = start_session(self.client, self.ci).data['session']['id']
+        today = timezone.localdate()
+        listed = self.roll_list(today)
+        self.assertEqual(listed.data['live_session_id'], session_id)
+        res = self.save(today, [self.a])
+        self.assertEqual((res.status_code, res.data['code'], res.data['session_id']), (409, 'session_running', session_id))
+        self.assertFalse(AttendanceLog.objects.filter(date=today).exists())
+        # Other dates are fine
+        self.assertEqual(self.save(D4, [self.a]).status_code, 200)
+
+    def test_roll_call_and_corrections_still_work_in_a_finished_semester(self):
+        self.semester.is_active = False
+        self.semester.save(update_fields=['is_active'])
+        self.assertEqual(self.save(datetime.date(2026, 9, 7), [self.a]).status_code, 200)
+        res = self.client.put(self.url('attendance/'), {
+            'date': D4.isoformat(), 'profile_id': str(self.b.id), 'status': 'PRESENT',
+        }, format='json')
+        self.assertEqual((res.status_code, res.data['changed']), (200, True))
+
+
 class DeleteDateTests(TeacherTestCase):
     def test_deletes_the_dates_classes_and_logs(self):
         res = self.client.delete(self.url('history-session/2026-09-02/'))

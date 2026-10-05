@@ -50,8 +50,18 @@ class LoginIPThrottle(IPRateThrottle):
     scope = 'login_ip'
 
 
-class RegisterThrottle(IPRateThrottle):
+class RegisterThrottle(IPAndEmailRateThrottle):
+    """
+    Sign-up tries per IP + email: a class signs up together from one campus IP, often retrying
+    after "This password is too common", so a per-IP count alone would block the ones after them.
+    Failed tries still count (the 400 says whether an email or student ID is taken).
+    """
     scope = 'register'
+
+
+class RegisterIPThrottle(IPRateThrottle):
+    """A wide cap per IP on top, against creating or probing many accounts from one address."""
+    scope = 'register_ip'
 
 
 class PasswordForgotThrottle(IPRateThrottle):

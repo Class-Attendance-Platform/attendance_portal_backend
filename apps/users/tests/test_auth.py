@@ -4,6 +4,7 @@ from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.attendance.tests.helpers import PASSWORD, client_for, make_admin, make_student, make_teacher
 from apps.users.models import User
@@ -271,6 +272,73 @@ class PasswordResetTests(AuthTestCase):
         uid, token = self.link_parts()
         User.objects.filter(pk=self.student.user.pk).update(deleted=True, is_active=False)
         self.assertEqual(self.reset(uid, token).data['code'], 'invalid_link')
+
+
+class OldAccessTokensStopAfterAPasswordChangeTests(AuthTestCase):
+    """Access tokens carry a fingerprint of the password (CHECK_REVOKE_TOKEN, apps/users/jwt.py)."""
+
+    def me(self, access):
+        return APIClient().get('/api/auth/me/', HTTP_AUTHORIZATION=f'Bearer {access}')
+
+    def assert_refused(self, res):
+        self.assertEqual(res.status_code, 401)
+        self.assertEqual(res.data['code'], 'password_changed')
+        self.assertEqual(res.data['message'], 'Your password was changed. Please sign in again.')
+
+    def test_password_change_ends_the_other_devices_access_at_once(self):
+        other = self.login().data
+        self.assertEqual(self.me(other['access']).status_code, 200)
+        res = client_for(self.student.user).post(
+            '/api/auth/password/change/', {'current_password': PASSWORD, 'new_password': NEW_PASSWORD}, format='json',
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assert_refused(self.me(other['access']))
+        self.assertEqual(self.refresh(other['refresh']).status_code, 401)
+        # The device that changed it goes on with the fresh pair
+        self.assertEqual(self.me(res.data['tokens']['access']).status_code, 200)
+        self.assertEqual(self.refresh(res.data['tokens']['refresh']).status_code, 200)
+
+    def test_reset_by_email_ends_old_access_tokens(self):
+        other = self.login().data
+        user = User.objects.get(pk=self.student.user.pk)
+        query = parse_qs(urlparse(password_reset_link(user)).query)
+        res = self.client.post('/api/auth/password/reset/', {
+            'uid': query['uid'][0], 'token': query['token'][0], 'new_password': NEW_PASSWORD,
+        }, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assert_refused(self.me(other['access']))
+        self.assertEqual(self.refresh(other['refresh']).status_code, 401)
+
+    def test_admin_reset_ends_old_access_tokens(self):
+        other = self.login().data
+        admin = client_for(make_admin('admin@example.com'))
+        res = admin.post(f'/api/admin/users/{self.student.user.id}/reset-password/',
+                         {'new_password': NEW_PASSWORD}, format='json')
+        self.assertEqual(res.status_code, 200)
+        self.assert_refused(self.me(other['access']))
+        self.assertEqual(self.refresh(other['refresh']).status_code, 401)
+        self.assertEqual(self.me(self.login(password=NEW_PASSWORD).data['access']).status_code, 200)
+
+    def test_tokens_from_before_the_switch_keep_working_after_one_refresh(self):
+        # A pair made without the fingerprint (as before CHECK_REVOKE_TOKEN was on)
+        refresh = RefreshToken.for_user(self.student.user)
+        del refresh['hash_password']
+        old_access = refresh.access_token
+        self.assertNotIn('hash_password', old_access.payload)
+        self.assertEqual(self.me(str(old_access)).status_code, 401)  # the app refreshes on a 401
+        res = self.refresh(str(refresh))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.me(res.data['access']).status_code, 200)
+        self.assertEqual(self.refresh(res.data['refresh']).status_code, 200)
+
+    def test_a_token_from_before_a_password_change_cannot_be_refreshed(self):
+        # Even if it was not blacklisted (e.g. a password set outside the app)
+        refresh = RefreshToken.for_user(self.student.user)
+        user = User.objects.get(pk=self.student.user.pk)
+        user.set_password(NEW_PASSWORD)
+        user.save()
+        self.assert_refused(self.refresh(str(refresh)))
+        self.assert_refused(self.me(str(refresh.access_token)))
 
 
 class AppConfigTests(TestCase):

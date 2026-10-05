@@ -14,7 +14,7 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.academic.models import CourseInfo, StudentClassroom
+from apps.academic.models import CourseInfo, Semester, StudentClassroom
 from apps.academic.serializers import person_name
 from apps.attendance import codes, redis_service
 from apps.attendance.models import AttendanceLog, AttendanceSession
@@ -50,6 +50,13 @@ def session_ended_response(message='This session has ended.'):
     return error_response(message, status=410, code='session_ended')
 
 
+def semester_finished_response():
+    """No new live or face sessions for a finished semester (roll call and corrections stay)."""
+    return error_response(
+        'This semester is finished. Use roll call to add or fix a class.', status=400, code='semester_finished',
+    )
+
+
 def cancelled_response():
     return error_response('This session was cancelled.', status=404, code='not_found')
 
@@ -77,16 +84,22 @@ class StartSessionView(APIView):
 
         data = serializer.validated_data
         ci = get_object_or_404(
-            CourseInfo, id=data['course_info_id'], deleted=False, course__deleted=False, semester__deleted=False,
+            CourseInfo.objects.select_related('semester'),
+            id=data['course_info_id'], deleted=False, course__deleted=False, semester__deleted=False,
         )
         if not can_manage_course(request.user, ci):
             return not_your_course_response()
+        if not ci.semester.is_active:
+            return semester_finished_response()
 
         duration = data['duration_minutes'] * 60
         try:
             with transaction.atomic():
                 # One start at a time (only this row: no Meta ordering joins under FOR UPDATE)
                 CourseInfo.objects.select_for_update().filter(pk=ci.pk).order_by().first()
+                # Finished meanwhile (read again under the lock)
+                if not Semester.objects.filter(pk=ci.semester_id, is_active=True).exists():
+                    return semester_finished_response()
                 # A live session blocks a new one; an ended one is saved first.
                 for running in AttendanceSession.objects.filter(course_info=ci, is_active=True):
                     if session_is_live(running, redis_service.get_session_cache(str(running.id))):
@@ -272,7 +285,12 @@ class LiveMarkView(APIView):
         student = StudentProfile.objects.select_related('user').filter(
             id=serializer.validated_data['profile_id'], user__deleted=False,
         ).first()
-        if student is None or not can_join_live(student, session):
+        # Anyone the session will save (enrolled on its date): also a student removed today after
+        # a class, who is still counted today (left_at = tomorrow) but can't check in themselves.
+        enrolled = student is not None and enrolled_memberships(session.course_info, session.date).filter(
+            student=student,
+        ).exists()
+        if not enrolled:
             return error_response('This student is not in this course.', status=400, code='not_enrolled')
         if not session_is_live(session, redis_service.get_session_cache(str(session.id))):
             return session_ended_response('This session has ended. Change attendance in the course history.')

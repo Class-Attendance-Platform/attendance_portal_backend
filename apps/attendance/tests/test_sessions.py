@@ -1,4 +1,5 @@
 """Live sessions with the rotating 6-digit code (API v2 section 5)."""
+import datetime
 import time
 import uuid
 from unittest import mock
@@ -7,6 +8,7 @@ from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from apps.academic.models import Semester, StudentClassroom
 from apps.attendance import codes, redis_service
@@ -73,6 +75,13 @@ class StartSessionTests(LiveTestCase):
     def test_not_for_a_course_of_a_deleted_semester(self):
         Semester.objects.filter(id=self.ci.semester_id).update(deleted=True)
         self.assertEqual(start_session(self.teacher_client, self.ci).status_code, 404)
+        self.assertFalse(AttendanceSession.objects.exists())
+
+    def test_not_for_a_course_of_a_finished_semester(self):
+        Semester.objects.filter(id=self.ci.semester_id).update(is_active=False)
+        res = start_session(self.teacher_client, self.ci)
+        self.assertEqual((res.status_code, res.data['code']), (400, 'semester_finished'))
+        self.assertEqual(res.data['message'], 'This semester is finished. Use roll call to add or fix a class.')
         self.assertFalse(AttendanceSession.objects.exists())
 
     def test_start_returns_the_session(self):
@@ -449,6 +458,20 @@ class LiveMarkTests(LiveTestCase):
                                            format='json')
             self.assertEqual((res.status_code, res.data['code']), (400, 'not_enrolled'))
         self.assertEqual(redis_service.get_submissions(session_id), {})
+
+    def test_a_student_removed_today_after_a_class_can_still_be_marked(self):
+        # Removed after this morning's class: left_at = tomorrow, so today still counts for them
+        session_id = self.start()
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        StudentClassroom.objects.filter(student=self.student_b).update(left_at=tomorrow)
+        status = self.teacher_client.get(f'/api/sessions/{session_id}/status/').data['session']
+        self.assertIn(str(self.student_b.id), [s['profile_id'] for s in status['not_checked_in']])
+        res = self.teacher_client.post(f'/api/sessions/{session_id}/mark/', {'profile_id': str(self.student_b.id)},
+                                       format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(check_in(self.student_b, session_id).data['code'], 'not_enrolled')  # not by themselves
+        self.teacher_client.post(f'/api/sessions/{session_id}/stop/')
+        self.assertEqual(self.log_of(session_id, self.student_b).status, 'PRESENT')
 
     def test_after_the_session_ended(self):
         session_id = self.start()

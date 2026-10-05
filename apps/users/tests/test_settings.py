@@ -13,7 +13,8 @@ ENV_EXAMPLE = settings.BASE_DIR / '.env.example'
 APP_KEYS = (
     'WEB_URL', 'MIN_APP_VERSION', 'LATEST_APP_VERSION', 'ATTENDANCE_MIN_PERCENT',
     'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL',
-    'THROTTLE_LOGIN', 'THROTTLE_REGISTER', 'THROTTLE_PASSWORD_FORGOT', 'THROTTLE_CHECK_IN', 'NUM_PROXIES',
+    'THROTTLE_LOGIN', 'THROTTLE_LOGIN_IP', 'THROTTLE_REGISTER', 'THROTTLE_REGISTER_IP', 'THROTTLE_PASSWORD_FORGOT',
+    'THROTTLE_CHECK_IN', 'NUM_PROXIES',
 )
 
 
@@ -39,8 +40,8 @@ class SettingsTests(SimpleTestCase):
         self.assertEqual((s.EMAIL_HOST, s.EMAIL_PORT, s.EMAIL_USE_TLS), ('smtp.gmail.com', 587, True))
         self.assertEqual(s.EMAIL_HOST_USER, '')  # empty = password reset by email is off
         self.assertEqual(s.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'], {
-            'login': '10/min', 'login_ip': '300/min', 'register': '60/hour', 'password_forgot': '20/hour',
-            'check_in': '30/min',
+            'login': '10/min', 'login_ip': '300/min', 'register': '10/hour', 'register_ip': '300/hour',
+            'password_forgot': '20/hour', 'check_in': '30/min',
         })
 
     def test_values_from_env(self):

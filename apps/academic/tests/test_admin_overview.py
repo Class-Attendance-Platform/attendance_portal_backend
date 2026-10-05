@@ -88,7 +88,7 @@ class CourseInfoListTests(NumbersTestCase):
         self.assertEqual(rows[0], {
             'id': str(self.ci.id),
             'course': {'id': str(self.ci.course_id), 'code': 'CSE301', 'title': 'Course CSE301'},
-            'teacher': {'id': str(self.teacher.id), 'name': 'Nadia Islam'},
+            'teacher': {'id': str(self.teacher.id), 'name': 'Nadia Islam', 'deleted': False},
             'semester': {'id': str(self.semester.id), 'label': 'Level 3 · Term I · 2025-26', 'is_active': True},
             'student_count': 3,
             'classes_held': 4,
@@ -143,6 +143,17 @@ class OverviewTests(NumbersTestCase):
              'course_title': 'Course CSE301', 'date': '2026-09-01', 'delivery': 'IN_CLASS', 'mode': 'QR_ONLINE',
              'present': 0, 'total': 0},
         ])
+
+    def test_recent_sessions_leave_deleted_accounts_out(self):
+        session = AttendanceSession.objects.create(course_info=self.ci, date=D3, mode='QR_ONLINE', is_active=False,
+                                                   ended_at=timezone.now())
+        AttendanceLog.objects.filter(course_info=self.ci, date=D3).update(session=session)  # a, b present; c absent
+        before = self.admin.get('/api/admin/overview/').data['recent_sessions'][0]
+        self.assertEqual((before['present'], before['total']), (2, 3))
+        self.a.user.deleted = True
+        self.a.user.save(update_fields=['deleted'])
+        after = self.admin.get('/api/admin/overview/').data['recent_sessions'][0]
+        self.assertEqual((after['present'], after['total']), (1, 2))  # as the course page counts it
 
     @override_settings(ATTENDANCE_MIN_PERCENT=50)
     def test_minimum_is_a_setting(self):
