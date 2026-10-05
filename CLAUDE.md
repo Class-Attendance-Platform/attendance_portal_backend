@@ -79,8 +79,8 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - `offline_server/` separate FastAPI app for offline QR on the teacher's laptop (calls this API).
 - Tests: `apps/*/tests/`; factories in `apps/attendance/tests/helpers.py`. CI: `.github/workflows/tests.yml`
   (Python 3.14 like the server; checks, migrations check, tests).
-- `deploy/` server files: `attendanceportal-api.service` (systemd, gunicorn on a unix socket as
-  www-data), `nginx/` (API proxy with 32 MB uploads; static web app with SPA fallback), `README.md`
+- `deploy/` server files: `attendanceportal-api.service` (systemd, gunicorn on a unix socket as its
+  own user `attendanceportal`, group www-data for nginx; only it can read `.env`), `nginx/` (API proxy with 32 MB uploads; static web app with SPA fallback), `README.md`
   (one command per block: database + Neon copy, backend, web build, nginx/certbot, app releases).
 
 ## Conventions

@@ -13,6 +13,8 @@ Run every command yourself, one block at a time, and check its output before the
 Nothing here touches the other sites on the server. Start after both pull requests are merged
 (the server runs `main` for the backend and `master` for the frontend).
 
+Run the commands as root: start with `sudo -i`.
+
 ## 1. Get the code
 
 ```bash
@@ -23,7 +25,7 @@ cd /var/www && git clone https://github.com/Class-Attendance-Platform/attendance
 cd /var/www && git clone https://github.com/Class-Attendance-Platform/attendance_portal_frontend.git attendanceportal-frontend
 ```
 
-## 2. Database
+## 2. Database and Redis
 
 Create the database user (you will be asked to type a new password; keep it for `.env`):
 
@@ -38,7 +40,9 @@ sudo -u postgres createdb --owner attendanceportal attendanceportal
 ### Copy the existing data from Neon
 
 Paste your Neon connection string when asked (it is not shown on screen). Find it in the Neon
-dashboard: Connection Details → connection string, e.g. `postgresql://user:password@host/db?sslmode=require`.
+dashboard: Connect → turn **Connection pooling off** (the host must not contain `-pooler`; Neon
+says to use the direct connection for `pg_dump`) → copy the string, e.g.
+`postgresql://user:password@ep-xxx.region.aws.neon.tech/db?sslmode=require`.
 
 ```bash
 read -rs NEON_URL
@@ -55,10 +59,43 @@ pg_restore --no-owner --no-privileges --host=127.0.0.1 --username=attendanceport
 ```
 
 Messages about objects that cannot be created (for example Neon-only extensions) can be ignored;
-send the output if unsure. Afterwards, reset the Neon password or delete that Neon database: its
-old password is public in the frontend repo.
+send the output if unsure.
+
+The old Neon password is public in the frontend repo, so check who can log in as admin
+(read-only; send the output, and say if you don't recognise an account):
+
+```bash
+sudo -u postgres psql attendanceportal -c "SELECT email, role, is_superuser, is_active, date_joined, last_login FROM users_user WHERE is_superuser OR is_staff OR role = 'ADMIN' ORDER BY date_joined;"
+```
+
+The dump file holds every account and password hash: remove it once the restore worked.
+
+```bash
+shred -u /root/neon-attendance.dump
+```
+
+Then reset the Neon password or delete that Neon database.
+
+### Redis check (read-only)
+
+Database 5 must be unused by your other sites (expect `0`), and Redis must not delete keys when
+memory is full (expect `noeviction`):
+
+```bash
+redis-cli -n 5 DBSIZE; redis-cli CONFIG GET maxmemory-policy
+```
+
+If it says `NOAUTH`, Redis has a password: put it in `.env` later as
+`REDIS_URL=redis://:<password>@127.0.0.1:6379/5`. Send the output if either value is different.
 
 ## 3. Backend
+
+A system user for the API, so other sites on this server can't read its settings (group
+`www-data` lets nginx reach it):
+
+```bash
+useradd --system --gid www-data --no-create-home --shell /usr/sbin/nologin attendanceportal
+```
 
 ```bash
 cd /var/www/attendanceportal-backend && python3 -m venv venv
@@ -70,14 +107,11 @@ cd /var/www/attendanceportal-backend && python3 -m venv venv
 cd /var/www/attendanceportal-backend && venv/bin/pip install -r requirements.txt
 ```
 
-Create `.env` from the example and fill in your values (secret key, database password):
+Create `.env` from the example, readable only by the API user, and fill in your values (secret
+key, database password):
 
 ```bash
-cd /var/www/attendanceportal-backend && cp .env.example .env && nano .env
-```
-
-```bash
-cd /var/www/attendanceportal-backend && chown root:www-data .env && chmod 640 .env
+cd /var/www/attendanceportal-backend && install -m 600 -o attendanceportal -g www-data .env.example .env && nano .env
 ```
 
 ```bash
