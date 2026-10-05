@@ -83,7 +83,8 @@ class Classroom(models.Model):
 class MembershipQuerySet(models.QuerySet):
     """
     A membership covers the dates joined_at <= day < left_at. joined_at null = from the
-    start; left_at null = still a member. Former members keep their row (history).
+    start; left_at null = still a member. Former members keep their row (history). Numbers
+    use StudentClassroom.counts_on (on the join day only classes that logged them count).
     """
 
     def current(self):
@@ -137,6 +138,14 @@ class StudentClassroom(models.Model):
     def covers(self, day):
         """Was the student a member on this date?"""
         return (self.joined_at is None or self.joined_at <= day) and (self.left_at is None or day < self.left_at)
+
+    def counts_on(self, day, has_log) -> bool:
+        """
+        Does a course's class on this date count for the student (held for them)? Inside the
+        membership; on the join day only if they have a log for it that day: a class held
+        before they were added that day has none (everything run after they joined logs them).
+        """
+        return self.covers(day) and (day != self.joined_at or has_log)
 
     def __str__(self):
         return f'{self.student} in {self.classroom}'

@@ -1,5 +1,6 @@
 from rest_framework.permissions import BasePermission
-from rest_framework.response import Response
+
+from config.errors import error_response
 
 
 class IsAdmin(BasePermission):
@@ -42,4 +43,4 @@ def can_manage_course(user, course_info) -> bool:
 
 
 def not_your_course_response():
-    return Response({'success': False, 'message': 'You do not teach this course.'}, status=403)
+    return error_response('You do not teach this course.', status=403, code='permission_denied')

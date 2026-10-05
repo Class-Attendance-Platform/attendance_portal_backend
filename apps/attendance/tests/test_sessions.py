@@ -4,12 +4,14 @@ import uuid
 from unittest import mock
 
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 
-from apps.academic.models import StudentClassroom
+from apps.academic.models import Semester, StudentClassroom
 from apps.attendance import codes, redis_service
 from apps.attendance.models import AttendanceLog, AttendanceSession
-from apps.attendance.services import finalize_session
+from apps.attendance.services import _lock_course, finalize_session
 from apps.attendance.tests.helpers import (
     check_in, client_for, current_code, expire_session, make_admin, make_course_info, make_student,
     make_teacher, start_session,
@@ -51,6 +53,10 @@ class CodeTests(TestCase):
         self.assertFalse(codes.code_matches('s', codes.code_for('s', window + 1), now))
         self.assertFalse(codes.code_matches('', '123456', now))
 
+    def test_non_ascii_text_never_matches_or_raises(self):
+        self.assertFalse(codes.code_matches('s', '১২৩৪৫৬'))
+        self.assertFalse(codes.code_matches('s', 'é23456'))
+
     def test_expires_in_counts_down_to_the_next_window(self):
         self.assertEqual(codes.current_code('s', now=1_800_000_010.0)[1], 20)  # 1_800_000_000 is a window start
         self.assertEqual(codes.current_code('s', now=1_800_000_029.5)[1], 1)
@@ -60,7 +66,15 @@ class CodeTests(TestCase):
         self.assertEqual(codes.check_in_url('abc', '012345'), 'https://portal.example/check-in?s=abc&c=012345')
 
 
+BENGALI_DIGITS = str.maketrans('0123456789', '০১২৩৪৫৬৭৮৯')
+
+
 class StartSessionTests(LiveTestCase):
+    def test_not_for_a_course_of_a_deleted_semester(self):
+        Semester.objects.filter(id=self.ci.semester_id).update(deleted=True)
+        self.assertEqual(start_session(self.teacher_client, self.ci).status_code, 404)
+        self.assertFalse(AttendanceSession.objects.exists())
+
     def test_start_returns_the_session(self):
         res = start_session(self.teacher_client, self.ci, delivery='ONLINE', duration_minutes=10)
         self.assertEqual(res.status_code, 201)
@@ -188,6 +202,33 @@ class CheckInTests(LiveTestCase):
     def test_code_with_spaces_is_accepted(self):
         code = current_code(self.session_id)
         self.assertEqual(check_in(self.student_a, self.session_id, code=f'{code[:3]} {code[3:]}').status_code, 200)
+
+    def test_bengali_and_other_script_digits_are_accepted(self):
+        code = current_code(self.session_id)
+        res = check_in(self.student_a, self.session_id, code=code.translate(BENGALI_DIGITS))  # QR path
+        self.assertEqual(res.status_code, 200, res.data)
+        bengali = code.translate(BENGALI_DIGITS)
+        res = check_in(self.student_b, code=f'{bengali[:3]} {bengali[3:]}')  # typed, with a space
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(redis_service.get_submissions(self.session_id)['2302002']['method'], 'CODE')
+
+    def test_wrong_code_in_other_digits_is_code_invalid(self):
+        wrong = ('000000' if current_code(self.session_id) != '000000' else '111111').translate(BENGALI_DIGITS)
+        fullwidth = '１２３４５６' if current_code(self.session_id) != '123456' else '６５４３２１'
+        for res in (check_in(self.student_a, self.session_id, code=wrong),
+                    check_in(self.student_a, code=wrong),
+                    check_in(self.student_a, code=fullwidth),
+                    check_in(self.student_a, self.session_id, code='১২৩৪৫²')):  # ² is not a decimal digit
+            self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
+        self.assertEqual(redis_service.get_submissions(self.session_id), {})
+
+    def test_course_of_a_deleted_semester(self):
+        Semester.objects.filter(id=self.ci.semester_id).update(deleted=True)
+        res = check_in(self.student_a, self.session_id)
+        self.assertEqual((res.status_code, res.data['code']), (410, 'session_ended'))
+        res = check_in(self.student_a, code=current_code(self.session_id))
+        self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
+        self.assertEqual(redis_service.get_submissions(self.session_id), {})
 
     def test_student_not_in_class(self):
         outsider = make_student('c@example.com', 2302003)
@@ -514,6 +555,7 @@ class TeacherOwnershipTests(TestCase):
     def test_other_teacher_cannot_start_session(self):
         res = start_session(self.other_client, self.ci)
         self.assertEqual(res.status_code, 403)
+        self.assertEqual((res.data['code'], res.data['message']), ('permission_denied', 'You do not teach this course.'))
         self.assertFalse(AttendanceSession.objects.exists())
 
     def test_other_teacher_cannot_control_owners_session(self):
@@ -620,3 +662,13 @@ class SessionEdgeCaseTests(LiveTestCase):
         self.assertIsNone(res.data['current'][0]['live_session_id'])
         self.assertFalse(AttendanceSession.objects.get(id=session_id).is_active)
         self.assertEqual(AttendanceLog.objects.get(student=self.student_a).status, 'PRESENT')
+
+
+class CourseLockTests(TestCase):
+    def test_locks_only_the_course_info_row(self):
+        ci = make_course_info(make_teacher('t@example.com'))
+        with CaptureQueriesContext(connection) as queries:
+            _lock_course(ci)
+        [query] = queries.captured_queries
+        # CourseInfo's Meta ordering would join (and on Postgres lock) the semester and course rows
+        self.assertNotIn('JOIN', query['sql'])

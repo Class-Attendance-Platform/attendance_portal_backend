@@ -162,6 +162,15 @@ class ImportTests(TestCase):
         res = self.post(upload('students.csv', content))
         self.assertEqual(res.data['summary']['create'], 1)
 
+    def test_email_longer_than_150_characters_is_a_row_error(self):
+        long_email = f'{"m" * 140}@example.com'
+        content = f'student_id,name,email,level,term\n2302301,Mim Akter,{long_email},First,I\n'
+        res = self.post(upload('students.csv', content), apply='true')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['summary'], {'create': 0, 'exists': 0, 'error': 1})
+        self.assertEqual(res.data['rows'][0]['errors'], ['Email is too long.'])
+        self.assertFalse(User.objects.filter(email=long_email).exists())
+
     def test_file_problems(self):
         cases = [
             (upload('students.txt', CSV), 'Upload a .csv or .xlsx file.'),

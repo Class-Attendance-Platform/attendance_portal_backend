@@ -183,6 +183,22 @@ class CorrectionTests(TeacherTestCase):
         day = self.client.get(self.url(f'students/{self.b.id}/')).data['days'][2]
         self.assertEqual((day['status'], day['changed_by']), ('PRESENT', 'Tariq Islam'))
 
+    def test_shown_method_follows_the_day_status(self):
+        # b was absent in the QR session (no method), a checked in by QR
+        self.assertEqual(self.correct(self.b, D2, 'PRESENT').data['day']['method'], 'TEACHER')
+        self.assertIsNone(self.correct(self.a, D2, 'ABSENT').data['day']['method'])
+        history = self.client.get(f'/api/sessions/course-info/{self.ci.id}/history/?date=2026-09-02').data['history']
+        methods = {row['student_id']: (row['status'], row['method']) for row in history[0]['logs']}
+        self.assertEqual(methods, {2302001: ('ABSENT', None), 2302002: ('PRESENT', 'TEACHER')})
+        # The stored methods are kept
+        self.assertEqual(dict(AttendanceLog.objects.filter(date=D2).values_list('student__student_id', 'method')),
+                         {2302001: 'QR', 2302002: ''})
+        # A roll call's absent log was made by the teacher: TEACHER
+        day = self.client.get(self.url(f'students/{self.b.id}/')).data['days'][3]
+        self.assertEqual((day['date'], day['status'], day['method']), ('2026-09-01', 'ABSENT', 'TEACHER'))
+        student_days = client_for(self.a.user).get(f'/api/student/course-info/{self.ci.id}/').data['days']
+        self.assertEqual([(d['status'], d['method']) for d in student_days][2], ('ABSENT', None))
+
     def test_same_status_changes_nothing(self):
         res = self.correct(self.a, D1, 'PRESENT')
         self.assertEqual((res.status_code, res.data['changed']), (200, False))

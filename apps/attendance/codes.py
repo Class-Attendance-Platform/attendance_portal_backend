@@ -38,8 +38,8 @@ def current_code(secret: str, now=None) -> tuple[str, int]:
 
 def code_matches(secret: str, code: str, now=None) -> bool:
     """True if `code` is the current or the previous window's code."""
-    if not secret or not code:
-        return False
+    if not secret or not code or not code.isascii():
+        return False  # compare_digest raises on non-ASCII text
     counter = window(now)
     return any(hmac.compare_digest(code_for(secret, c), code) for c in (counter, counter - 1))
 

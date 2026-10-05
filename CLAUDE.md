@@ -72,10 +72,13 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   `class_list(semester)` = current members, or everyone once the semester is finished; never delete
   rows: history), CourseInfo (course + teacher + semester + classroom = one taught class).
   `services.py`: `main_classroom`, `create_semester`, `join_date` (null before the semester's first
-  class, else today), `add_members`/`remove_members`, `promote` (finishes the source). `stats.py`:
+  class, else today), `leave_date` (today, or tomorrow when the class group held or holds a class
+  today), `add_members`/`remove_members`, `promote` (finishes the source). On the join day only
+  classes that logged the student count (`StudentClassroom.counts_on`). `stats.py`:
   `course_numbers()` (held/attended/percent per student inside their membership, class count,
-  average, below-min) and `semester_numbers()`. `views/teacher.py`: teacher's courses (current/previous
-  with numbers, face counts, live session), course detail, one student's days, live lookup,
+  average, below-min) and `semester_numbers()`. Command `backfill_join_dates` (dry run, `--apply`):
+  join dates for students added mid-semester under the old app, guessed from their first log.
+  `views/teacher.py`: teacher's courses (current/previous with numbers, face counts, live session), course detail, one student's days, live lookup,
   single-student correction (PUT `attendance/`), roll call, delete a date. `views/admin.py`: overview,
   semesters (finish/reopen/restore, roster, courses taught, promote), courses, course-info list and
   reassign; older classroom endpoints.

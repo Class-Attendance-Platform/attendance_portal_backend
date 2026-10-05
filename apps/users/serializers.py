@@ -5,7 +5,7 @@ from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers
 
-from .constants import DEPARTMENT, FACULTY, LEVELS, TERMS
+from .constants import DEPARTMENT, EMAIL_MAX_LENGTH, FACULTY, LEVELS, TERMS
 from .models import DeviceBinding, StudentProfile, TeacherProfile
 from .services import iso
 
@@ -162,7 +162,7 @@ class NewAccountSerializer(serializers.Serializer):
     Sign-up makes it waiting for approval; admins create approved accounts (verified=True).
     """
     role = serializers.CharField()
-    email = serializers.EmailField(max_length=254)
+    email = serializers.EmailField(max_length=EMAIL_MAX_LENGTH)
     password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
     first_name = serializers.CharField(max_length=150)
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default='')
@@ -276,7 +276,7 @@ class NewPasswordSerializer(serializers.Serializer):
 
 class _ProfileUpdateSerializer(serializers.Serializer):
     """PATCH: any subset of the fields; the instance is a Student/TeacherProfile."""
-    email = serializers.EmailField(max_length=254, required=False)
+    email = serializers.EmailField(max_length=EMAIL_MAX_LENGTH, required=False)
     first_name = serializers.CharField(max_length=150, required=False)
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
 

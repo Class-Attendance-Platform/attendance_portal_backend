@@ -11,3 +11,6 @@ DEPARTMENT = 'COMPUTER_SCIENCE_AND_ENGINEERING'
 
 LEVELS = ['First', 'Second', 'Third', 'Fourth']
 TERMS = ['I', 'II']
+
+# Emails are also stored as the username, which holds at most 150 characters.
+EMAIL_MAX_LENGTH = 150

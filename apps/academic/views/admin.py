@@ -223,7 +223,7 @@ class SemesterStudentsRemoveView(APIView):
     permission_classes = [IsAdmin]
 
     def post(self, request, uuid):
-        """Marks students as left today; their history stays."""
+        """Marks students as left (today, or tomorrow after a class today); their history stays."""
         semester = get_object_or_404(Semester, id=uuid, deleted=False)
         serializer = ProfileIdsSerializer(data=request.data)
         if not serializer.is_valid():

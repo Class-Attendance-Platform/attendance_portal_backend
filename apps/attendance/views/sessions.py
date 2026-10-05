@@ -4,6 +4,7 @@ course history (section 6).
 """
 import re
 import secrets
+import unicodedata
 import uuid as uuid_lib
 from collections import defaultdict
 
@@ -32,7 +33,13 @@ from apps.users.throttles import CheckInThrottle
 from config.errors import error_response, validation_error_response
 
 QR_MODES = (AttendanceSession.Mode.QR_ONLINE, AttendanceSession.Mode.QR_OFFLINE)
-CODE_PATTERN = re.compile(r'^\d{6}$')
+CODE_PATTERN = re.compile(r'^[0-9]{6}$')
+
+
+def normalize_code(text) -> str:
+    """The typed code without spaces or dashes, other scripts' digits (e.g. Bengali ২৩৪) as 0-9."""
+    text = re.sub(r'[\s-]', '', text)
+    return ''.join(str(unicodedata.decimal(ch)) if ch.isdecimal() else ch for ch in text)
 
 
 def busy_response():
@@ -69,14 +76,17 @@ class StartSessionView(APIView):
             return validation_error_response(serializer.errors)
 
         data = serializer.validated_data
-        ci = get_object_or_404(CourseInfo, id=data['course_info_id'], deleted=False, course__deleted=False)
+        ci = get_object_or_404(
+            CourseInfo, id=data['course_info_id'], deleted=False, course__deleted=False, semester__deleted=False,
+        )
         if not can_manage_course(request.user, ci):
             return not_your_course_response()
 
         duration = data['duration_minutes'] * 60
         try:
             with transaction.atomic():
-                CourseInfo.objects.select_for_update().filter(pk=ci.pk).first()  # one start at a time
+                # One start at a time (only this row: no Meta ordering joins under FOR UPDATE)
+                CourseInfo.objects.select_for_update().filter(pk=ci.pk).order_by().first()
                 # A live session blocks a new one; an ended one is saved first.
                 for running in AttendanceSession.objects.filter(course_info=ci, is_active=True):
                     if session_is_live(running, redis_service.get_session_cache(str(running.id))):
@@ -354,7 +364,7 @@ class CheckInView(APIView):
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
         data = serializer.validated_data
-        code = re.sub(r'[\s-]', '', data['code'])
+        code = normalize_code(data['code'])
 
         student = StudentProfile.objects.select_related('user').filter(
             user=request.user, user__deleted=False,
@@ -367,6 +377,7 @@ class CheckInView(APIView):
             session = AttendanceSession.objects.select_related('course_info__course').filter(
                 id=data['session_id'], mode=AttendanceSession.Mode.QR_ONLINE,
                 course_info__deleted=False, course_info__course__deleted=False,
+                course_info__semester__deleted=False,
             ).first()
             if session is None:  # e.g. cancelled
                 return session_ended_response()
@@ -417,7 +428,7 @@ class CheckInView(APIView):
         sessions = AttendanceSession.objects.filter(
             is_active=True, mode=AttendanceSession.Mode.QR_ONLINE, qr_token__isnull=False,
             course_info__classroom_id__in=classroom_ids,
-            course_info__deleted=False, course_info__course__deleted=False,
+            course_info__deleted=False, course_info__course__deleted=False, course_info__semester__deleted=False,
         ).select_related('course_info__course')
         for session, _ in live_sessions(sessions):
             if codes.code_matches(session.qr_token, code) and can_join_live(student, session):
