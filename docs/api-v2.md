@@ -272,8 +272,9 @@ the semesters list, then by course code.
 A session belongs to one course. The teacher picks the length and where the class is:
 `delivery: "IN_CLASS" | "ONLINE"` (stored on the session; logs keep source `QR_ONLINE`).
 Every 30 seconds there is a new 6-digit **code**: `HMAC_SHA256(session.qr_token, floor(unix/30))`
-→ 6 digits (zero-padded). The server accepts the current and the previous window (so a code is
-valid for 30–60 s). `qr_token` is never sent to students. The QR shows the URL
+(the window number as 8 bytes, big-endian) → 6 digits like a one-time password (RFC 4226 dynamic
+truncation, zero-padded). The server accepts the current and the previous window (so a code is
+valid for 30–60 s). `qr_token` is never sent out (teachers get codes). The QR shows the URL
 `{WEB_URL}/check-in?s=<session_id>&c=<code>` (the phone camera opens the web check-in page; the
 in-app scanner reads `s` and `c` from the same URL).
 
@@ -285,18 +286,32 @@ Teacher (owner of the course, or admin):
 - POST /sessions/start/ `{course_info_id, delivery, duration_minutes: 2|5|10|15}` → 201
   `{success, session: {id, course_info_id, delivery, date, started_at, ends_at, time_left,
   code_period: 30}}`. 409 `code: "session_running"` with `session_id` if one is already live for
-  this course.
+  this course (a session whose timer ran out is saved first and does not block). `delivery`
+  defaults to IN_CLASS and `duration_minutes` to 5; other values → 400. Optional `mode` (default
+  `QR_ONLINE`; `FINGERPRINT` / `QR_OFFLINE` stay for the hidden fingerprint devices and the offline
+  laptop server; `FACE` → 400).
 - GET /sessions/<id>/code/ → `{success, code: "482913", check_in_url, expires_in /* s until it
-  changes */, period: 30}`. Poll every few seconds.
+  changes */, period: 30}`. Poll every few seconds. 410 `session_ended` once the session is over
+  (an expired one is saved); 400 `no_code` for a fingerprint session.
 - GET /sessions/<id>/status/ → live: `{success, active: true, session: {id, delivery, ends_at,
   time_left, total, checked_in: [{profile_id, student_id, name, time, method: "QR"|"CODE"|"TEACHER"}],
   not_checked_in: [{profile_id, student_id, name}]}}`; ended: `{success, active: false, session_id,
-  saved: bool, total_present}` (status saves an expired session, as today).
-- POST /sessions/<id>/extend/ `{minutes: 2}` → `{success, ends_at, time_left}` (max total 30 min).
+  saved: bool, total_present}` (status saves an expired session, as today). `total` = students
+  enrolled on the session's date; `checked_in` newest first (`time` = check-in date-time),
+  `not_checked_in` by student id. (`method` is `"FINGERPRINT"` only for the hidden devices.)
+- POST /sessions/<id>/extend/ `{minutes: 2}` (1–28, default 2) → `{success, ends_at, time_left}`
+  (max total 30 min: beyond it 400 `code: "too_long"`, "A session can last at most 30 minutes. You
+  can add up to N more minutes."). 410 `session_ended` when it is over.
 - POST /sessions/<id>/mark/ `{profile_id}` while live → adds the student to the live check-ins with
-  method TEACHER (saved with the session). After the session ended, use section 6 corrections.
-- POST /sessions/<id>/stop/ → saves now (exists).
-- POST /sessions/<id>/cancel/ → discards the session and its check-ins; nothing is saved; 200.
+  method TEACHER (saved with the session) → `{success, message, student: {profile_id, student_id,
+  name, time, method: "TEACHER"}}`. 400 `not_enrolled` (not a current member enrolled on the
+  session's date), 409 `already_checked_in`, 410 `session_ended`. After the session ended, use
+  section 6 corrections.
+- POST /sessions/<id>/stop/ → saves now (exists) → `{success, message, session_id, total_present}`.
+- POST /sessions/<id>/cancel/ → discards the session and its check-ins (the session is deleted:
+  its status then answers 404); nothing is saved; 200. Already saved → 409 `code:
+  "session_saved"` (delete its date in the history instead).
+- Too many requests on one session at once → 503 `code: "busy"` (try again).
 - GET /teacher/course-info/<id>/live/ → `{success, session: <same as start> | null}` (reopen after a
   reload).
 
@@ -309,6 +324,11 @@ Student:
   `{success, message: "Checked in to CSE 301.", course: {code, title}, time}`. Errors:
   400 `code_invalid` ("This code is wrong or has expired. Check the newest code."),
   403 `not_enrolled`, 409 `already_checked_in`, 409 `device_used`, 410 `session_ended`.
+  With `session_id` (the QR link or the in-app scanner) the method is QR; without it, CODE. An
+  unknown or cancelled `session_id` → 410 `session_ended`; a typed code that matches none of the
+  student's own live sessions → 400 `code_invalid`. `code` is a string (spaces are ignored);
+  `device_id` is required (400 field error). The live data keeps each check-in's method, time and
+  device id.
 - The old `/sessions/<id>/checkin/` and `/sessions/course-info/<id>/active/` (which leaked the QR token)
   are removed.
 
@@ -340,23 +360,42 @@ percent}, days: [{date, status: "PRESENT"|"ABSENT"|null /* null = not enrolled y
 "QR"|"CODE"|"FACE"|"TEACHER"|null, changed_by: name | null, changed_at | null}]}`.
 
 ### GET /sessions/course-info/<id>/history/ (exists, extended)
-Each day: `{date, sessions: [{session_id, delivery, mode}], logs: [{profile_id, student_id, name,
-status, method, changed_by, changed_at}]}`.
+`{success, course_info_id, history: [day]}`, newest first. Each day: `{date, sessions:
+[{session_id, delivery, mode}], logs: [{profile_id, student_id, name, status, method, changed_by,
+changed_at}]}`. `sessions` = that day's saved sessions (a roll call has none); `logs` = one row per
+student (one date = one class: PRESENT if any log that day says so; method/changed_* from that
+log), by student id. `?date=YYYY-MM-DD` and `?student_id=<profile_id>` narrow it (bad values →
+400). In `days` and `logs`, `method` is how the student was marked present: QR, CODE, FACE, TEACHER
+(roll call or correction-created logs: either status), or null (absent in a live/face session).
+`changed_at` is a date-time; `changed_by` a name.
 
 ### PUT /teacher/course-info/<id>/attendance/
 Body `{date, profile_id, status: "PRESENT"|"ABSENT"}` → changes **only that student** on a date that
 already has a class. Keeps the original method, records `changed_by` and `changed_at`, and adds an
 AttendanceChange row (old → new, who, when). 404 `code: "no_class_on_date"` when the date has no
-class (use roll call). Future dates → 400.
+class (use roll call). Future dates → 400 `code: "future_date"`. A student who was not a member on
+that date → 400 `code: "not_enrolled"`. Every log of that student that day with another status
+changes (several sessions a day); a student without a log that day gets one (method TEACHER, old
+status ""). 200 `{success, message, changed: bool /* false = it was already so */, day: {date,
+status, method, changed_by, changed_at}}`.
 
 ### POST /teacher/course-info/<id>/roll-call/  (replaces history-session POST)
 Body `{date, present_profile_ids: [..]}`. Creates the class for that date if missing (source
 TEACHER/MANUAL). For each student enrolled on that date: creates a log if missing; changes an
 existing log only if its status differs (recorded like a correction). Never re-labels other methods.
-Future dates → 400 `code: "future_date"`. 200 `{success, date, present, absent, changed}`.
+Future dates → 400 `code: "future_date"`. 200 `{success, message, date, present, absent, changed}`
+(`present`/`absent` = students enrolled that date; `changed` = students whose existing status
+changed). Ids of students not enrolled on that date are ignored. Created logs: source MANUAL,
+method TEACHER.
 
 ### DELETE /teacher/course-info/<id>/history-session/<date>/ (exists)
-Deletes that date's classes and logs (the UI asks for confirmation).
+Deletes that date's classes and logs (the UI asks for confirmation) → `{success, message, deleted
+/* logs */}`. 409 `session_running` while a live session runs on that date; a bad date → 400.
+
+All section 6 endpoints answer 404 for a deleted course, course-info or semester, and 403 (`You
+do not teach this course.`) for another teacher's course. The course list is ordered like the
+semesters list, then by course code. The student endpoint answers 404 for a student who was never
+in the course's class group.
 
 ## 7. Student
 
@@ -366,12 +405,18 @@ Second, Third, Fourth; I, II); percentages count from `joined_at`. Per course ad
 `{course_info_id, held, attended, percent, below_min, classes_needed /* to reach the minimum; 0 if
 already there */}` and per semester `{label, is_active, overall_percent, joined_at, left_at}`
 (their membership: semesters they left are still listed, with `left_at` set = history only, not
-current).
+current). `held` = the course's class dates inside the membership (a class date without a log for
+them counts as absent); `overall_percent` = attended / held over all the semester's courses (null
+when nothing is held); `classes_needed` = classes in a row to attend (null if the minimum can never
+be reached, e.g. a 100% minimum). The older keys stay with the same numbers (`totalClasses` = held,
+`presentCount` = attended, `percentage`, `history` over the held dates, oldest first).
 
 ### GET /student/course-info/<id>/
 `{success, course: {course_info_id, code, title, credits, teacher_name, semester: {label,
 is_active}}, attended, held, percent, classes_needed, days: [{date, status, method, changed: bool}]}`
-for the signed-in student only (403 if not theirs).
+for the signed-in student only (403 `code: "not_enrolled"` if they were never in its class group;
+former members still see it). `days`: every class date of the course, newest first; status null =
+outside their membership; `changed` = a teacher corrected it.
 
 ## 8. Faces, reports
 
@@ -390,7 +435,10 @@ for the signed-in student only (403 if not theirs).
   0003 gives every semester without a class group an empty "Main" one.
 - attendance: `AttendanceSession.delivery` (IN_CLASS default); `AttendanceLog.changed_by` (FK user,
   null, SET_NULL) and `changed_at` (null); new `AttendanceChange` (log FK, old_status, new_status,
-  changed_by, changed_at).
+  changed_by, changed_at) (0003). Also `AttendanceLog.method` (QR | CODE | FACE | TEACHER |
+  FINGERPRINT | "" = not checked in) so saved days can show QR vs typed code; data migration 0004
+  fills it for older logs (source MANUAL → TEACHER; present logs of QR / face / fingerprint
+  sessions → QR / FACE / FINGERPRINT; other absent logs stay "").
 - Management command `cleanup_broken_signups`: lists STUDENT/TEACHER users without a profile (made
   by the old sign-up bug); dry run by default, `--apply` removes them.
 

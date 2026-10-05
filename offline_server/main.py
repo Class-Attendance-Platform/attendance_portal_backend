@@ -165,7 +165,8 @@ async def commit_to_backend(backend_token: str, course_info_id: str, submissions
             json={
                 'course_info_id': course_info_id,
                 'mode': 'QR_OFFLINE',
-                'duration_seconds': 60,  # Short — we'll stop it immediately
+                'delivery': 'IN_CLASS',
+                'duration_minutes': 2,  # Short — we'll stop it immediately
             },
             headers={'Authorization': f'Bearer {backend_token}'},
         )
@@ -180,11 +181,7 @@ async def commit_to_backend(backend_token: str, course_info_id: str, submissions
         for student_int_id, info in submissions.items():
             mark_resp = await client.post(
                 f'{BACKEND_URL}/api/sessions/{session_id}/mark/',
-                json={
-                    'student_id': info['profile_uuid'],
-                    'status': 'PRESENT',
-                    'notes': f'QR offline attendance. MAC: {info["mac"]}',
-                },
+                json={'profile_id': info['profile_uuid']},  # checked in by the teacher (method TEACHER)
                 headers={'Authorization': f'Bearer {backend_token}'},
             )
             if mark_resp.status_code == 200:

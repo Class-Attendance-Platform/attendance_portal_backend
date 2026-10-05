@@ -472,7 +472,7 @@ class AdminOverviewView(APIView):
                 'course_code': s.course_info.course.code,
                 'course_title': s.course_info.course.title,
                 'date': s.date.isoformat(),
-                'delivery': getattr(s, 'delivery', 'IN_CLASS'),  # stored once sessions have it (section 5)
+                'delivery': s.delivery,
                 'mode': s.mode,
                 'present': s.present,
                 'total': s.total,

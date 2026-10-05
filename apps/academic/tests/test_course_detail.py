@@ -7,7 +7,7 @@ from apps.attendance.tests.helpers import client_for, make_course_info, make_stu
 
 
 class TeacherCourseDetailTests(TestCase):
-    def test_attendance_counts_and_history(self):
+    def test_attendance_counts_and_dates(self):
         teacher = make_teacher('teacher@example.com')
         a = make_student('a@example.com', 2302001)
         b = make_student('b@example.com', 2302002)
@@ -22,12 +22,12 @@ class TeacherCourseDetailTests(TestCase):
         res = client_for(teacher.user).get(f'/api/teacher/course-info/{ci.id}/')
 
         self.assertEqual(res.status_code, 200)
-        attendance = res.data['courseInfo']['attendance']
-        self.assertEqual(attendance['totalClasses'], 2)
-        self.assertEqual(attendance['attendanceMap'], {2302001: 2, 2302002: 1})
-        self.assertEqual(attendance['history'], [
-            {'date': '2026-10-02', 'presentStudents': [2302001, 2302002]},
-            {'date': '2026-10-01', 'presentStudents': [2302001]},
+        self.assertEqual(res.data['course']['classes_held'], 2)
+        self.assertEqual({s['student_id']: (s['attended'], s['held']) for s in res.data['students']},
+                         {2302001: (2, 2), 2302002: (1, 2)})
+        self.assertEqual(res.data['dates'], [
+            {'date': '2026-10-02', 'present': 2, 'total': 2},
+            {'date': '2026-10-01', 'present': 1, 'total': 2},
         ])
 
 
@@ -37,21 +37,29 @@ class RollCallSaveTests(TestCase):
         a = make_student('a@example.com', 2302001)
         ci = make_course_info(teacher, students=[a])
 
-        res = client_for(teacher.user).post(f'/api/teacher/course-info/{ci.id}/history-session/', {
-            'date': '2026-10-4', 'presentStudentIds': ['2302001'],
+        res = client_for(teacher.user).post(f'/api/teacher/course-info/{ci.id}/roll-call/', {
+            'date': '2026-10-4', 'present_profile_ids': [str(a.id)],
         }, format='json')
 
-        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.status_code, 200, res.data)
         log = AttendanceLog.objects.get(student=a)
         self.assertEqual((log.date, log.status), (datetime.date(2026, 10, 4), 'PRESENT'))
 
     def test_rejects_a_bad_date(self):
         teacher = make_teacher('teacher@example.com')
         ci = make_course_info(teacher)
-        res = client_for(teacher.user).post(f'/api/teacher/course-info/{ci.id}/history-session/', {
-            'date': 'yesterday', 'presentStudentIds': [],
+        res = client_for(teacher.user).post(f'/api/teacher/course-info/{ci.id}/roll-call/', {
+            'date': 'yesterday', 'present_profile_ids': [],
         }, format='json')
         self.assertEqual(res.status_code, 400)
+
+    def test_the_old_save_endpoint_is_gone(self):
+        teacher = make_teacher('teacher@example.com')
+        ci = make_course_info(teacher)
+        res = client_for(teacher.user).post(f'/api/teacher/course-info/{ci.id}/history-session/', {
+            'date': '2026-10-04', 'presentStudentIds': [],
+        }, format='json')
+        self.assertEqual(res.status_code, 404)
 
 
 class SeveralSessionsOneDayTests(TestCase):
@@ -74,16 +82,25 @@ class SeveralSessionsOneDayTests(TestCase):
                 )
 
     def test_teacher_course_detail(self):
-        attendance = client_for(self.teacher.user).get(f'/api/teacher/course-info/{self.ci.id}/').data['courseInfo']['attendance']
-        self.assertEqual(attendance['totalClasses'], 1)
-        self.assertEqual(attendance['attendanceMap'], {2302001: 1, 2302002: 1})
-        self.assertEqual(attendance['history'], [{'date': '2026-10-05', 'presentStudents': [2302001, 2302002]}])
+        res = client_for(self.teacher.user).get(f'/api/teacher/course-info/{self.ci.id}/')
+        self.assertEqual(res.data['course']['classes_held'], 1)
+        self.assertEqual([(s['attended'], s['held'], s['percent']) for s in res.data['students']],
+                         [(1, 1, 100.0), (1, 1, 100.0)])
+        self.assertEqual(res.data['dates'], [{'date': '2026-10-05', 'present': 2, 'total': 2}])
 
     def test_student_summary(self):
         res = client_for(self.b.user).get(f'/api/student/{self.b.id}/semesters/')
         course = res.data['semesters'][0]['courses'][0]
         self.assertEqual((course['totalClasses'], course['presentCount'], course['percentage']), (1, 1, 100.0))
+        self.assertEqual((course['held'], course['attended'], course['percent']), (1, 1, 100.0))
         self.assertEqual(course['history'], [{'date': '2026-10-05', 'present': True}])
+
+    def test_history_has_one_row_per_student_and_both_sessions(self):
+        res = client_for(self.teacher.user).get(f'/api/sessions/course-info/{self.ci.id}/history/')
+        [day] = res.data['history']
+        self.assertEqual([s['mode'] for s in day['sessions']], ['QR_ONLINE', 'FACE'])
+        self.assertEqual([(log['student_id'], log['status']) for log in day['logs']],
+                         [(2302001, 'PRESENT'), (2302002, 'PRESENT')])
 
     def test_export(self):
         res = client_for(self.teacher.user).get(f'/api/reports/course-info/{self.ci.id}/export/?export_format=csv')

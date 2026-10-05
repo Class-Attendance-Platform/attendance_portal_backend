@@ -70,20 +70,30 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   `services.py`: `main_classroom`, `create_semester`, `join_date` (null before the semester's first
   class, else today), `add_members`/`remove_members`, `promote` (finishes the source). `stats.py`:
   `course_numbers()` (held/attended/percent per student inside their membership, class count,
-  average, below-min) and `semester_numbers()`. `views/teacher.py`: teacher's courses, course detail
-  with attendance stats, bulk "history-session" save/delete by date. `views/admin.py`: overview,
+  average, below-min) and `semester_numbers()`. `views/teacher.py`: teacher's courses (current/previous
+  with numbers, face counts, live session), course detail, one student's days, live lookup,
+  single-student correction (PUT `attendance/`), roll call, delete a date. `views/admin.py`: overview,
   semesters (finish/reopen/restore, roster, courses taught, promote), courses, course-info list and
   reassign; older classroom endpoints.
-- `apps/attendance/` AttendanceSession (live QR/fingerprint session) and AttendanceLog (one row per
-  student per class; unique per session+student).
+- `apps/attendance/` AttendanceSession (live session; `delivery` IN_CLASS/ONLINE; `qr_token` = the
+  code secret, never sent out), AttendanceLog (one row per student per class; unique per
+  session+student; `method` QR/CODE/FACE/TEACHER/FINGERPRINT or '' = not checked in; `changed_by`/
+  `changed_at` = last correction) and AttendanceChange (correction trail).
   - Live flow: `start` writes the Redis entry first, then the session row → check-ins go to Redis
-    (`redis_service.py`, locked read-modify-write; `SessionBusy` → HTTP 503) →
+    (`redis_service.py`, locked read-modify-write; submissions keep method, time and device id, plus a
+    device → student map: one phone, one student per session; `SessionBusy` → HTTP 503) →
     `services.finalize_session()` saves PRESENT/ABSENT logs exactly once. It runs on stop, on a status
     poll after the timer, and best-effort via `finalize_expired_sessions()` / `finalize_ended_sessions()`
-    (teacher course list and detail, history, export, student's active-session lookup, next start).
-    Check-ins close at `end_time`; Redis data is kept 7 days. With no Redis data, `session_has_ended()`
-    trusts the database timer (`started_at + duration_seconds`).
-  - Students can only check in for themselves, only if enrolled; teachers can only mark enrolled students.
+    / `live_sessions()` (teacher course list and detail, history, export, live lookups, next start).
+    Check-ins close at `end_time` (extend moves it; 30 min total); Redis data is kept 7 days. With no
+    Redis data, `session_has_ended()` trusts the database timer (`started_at + duration_seconds`).
+    Cancel deletes an unsaved session. `codes.py`: the rotating 6-digit code (30 s windows, current +
+    previous accepted) and the QR link `{WEB_URL}/check-in?s=&c=`.
+  - Students check in only for themselves (`/sessions/check-in/`), only as current members enrolled
+    on the session's date; teachers can only mark such students.
+  - `records.py`: reading by day (day status, method, `classes_needed`, student days, the student's
+    semesters summary and course detail); `services.py` also has `correct_attendance` and `roll_call`
+    (change only differing logs, keep their method, record AttendanceChange rows).
 - `apps/hardware/` ESP32 fingerprint devices (`X-Hardware-Key` header auth), enrolment requests.
 - `apps/reports/` export csv/xlsx/pdf/docx (`generators.py`).
 - `apps/faces/` face attendance (`/api/faces/`). `engines/`: `get_engine()` picks `settings.FACE_ENGINE`;

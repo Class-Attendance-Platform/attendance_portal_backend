@@ -486,7 +486,7 @@ class CourseTests(AdminTestCase):
         ci = CourseInfo.objects.create(course=self.course, teacher=teacher, semester=semester,
                                        classroom=Classroom.objects.get(semester=semester))
         teacher_courses = f'/api/teacher/{teacher.id}/courses/'
-        self.assertEqual(len(client_for(teacher.user).get(teacher_courses).data['currentCourses']), 1)
+        self.assertEqual(len(client_for(teacher.user).get(teacher_courses).data['current']), 1)
 
         self.assertEqual(self.admin.delete(self.url).status_code, 200)
         self.assertEqual(self.admin.delete(self.url).status_code, 404)
@@ -495,13 +495,13 @@ class CourseTests(AdminTestCase):
                          ['CSE301'])
         self.assertEqual(self.admin.get('/api/admin/courses/?status=gone').data['code'], 'invalid_status')
         # Hidden from teachers too
-        self.assertEqual(client_for(teacher.user).get(teacher_courses).data['currentCourses'], [])
+        self.assertEqual(client_for(teacher.user).get(teacher_courses).data['current'], [])
         self.assertEqual(client_for(teacher.user).get(f'/api/teacher/course-info/{ci.id}/').status_code, 404)
         self.assertEqual(self.admin.get(f'/api/admin/semesters/{semester.id}/courses/').data['courses'], [])
 
         res = self.admin.post(f'{self.url}restore/')
         self.assertEqual((res.status_code, res.data['course']['deleted']), (200, False))
-        self.assertEqual(len(client_for(teacher.user).get(teacher_courses).data['currentCourses']), 1)
+        self.assertEqual(len(client_for(teacher.user).get(teacher_courses).data['current']), 1)
         self.assertEqual(self.admin.get(self.url).data['course']['code'], 'CSE301')
 
 
