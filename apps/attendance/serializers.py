@@ -1,46 +1,47 @@
 from rest_framework import serializers
+
 from .models import AttendanceSession, AttendanceLog
+
+DURATION_CHOICES = (2, 5, 10, 15)
 
 
 class StartSessionSerializer(serializers.Serializer):
     course_info_id   = serializers.UUIDField()
-    # Live sessions only; face attendance is saved through /api/faces/confirm/
-    mode             = serializers.ChoiceField(
-        choices=[c for c in AttendanceSession.Mode.choices if c[0] != AttendanceSession.Mode.FACE]
+    delivery         = serializers.ChoiceField(
+        choices=AttendanceSession.Delivery.choices, default=AttendanceSession.Delivery.IN_CLASS,
     )
-    duration_seconds = serializers.IntegerField(min_value=30, max_value=7200, default=300)
+    duration_minutes = serializers.ChoiceField(
+        choices=DURATION_CHOICES, default=5,
+        error_messages={'invalid_choice': 'Choose 2, 5, 10 or 15 minutes.'},
+    )
+    # Live sessions are QR_ONLINE; FINGERPRINT and QR_OFFLINE stay for the hidden fingerprint
+    # devices and the offline laptop server. Face attendance is saved through /api/faces/confirm/.
+    mode             = serializers.ChoiceField(
+        choices=[c for c in AttendanceSession.Mode.choices if c[0] != AttendanceSession.Mode.FACE],
+        default=AttendanceSession.Mode.QR_ONLINE,
+    )
 
 
-class ManualMarkSerializer(serializers.Serializer):
-    student_id = serializers.UUIDField()          # StudentProfile UUID
-    status     = serializers.ChoiceField(choices=AttendanceLog.Status.choices)
-    notes      = serializers.CharField(required=False, allow_blank=True, default='')
+class ExtendSessionSerializer(serializers.Serializer):
+    minutes = serializers.IntegerField(min_value=1, max_value=28, default=2)
 
 
-class QRCheckinSerializer(serializers.Serializer):
-    # Optional: the logged-in student is used; if sent, it must be their own id.
-    student_id  = serializers.IntegerField(required=False)  # numeric student_id e.g. 2302001
-    mac_address = serializers.CharField(max_length=17)
-    qr_token    = serializers.CharField()
+class LiveMarkSerializer(serializers.Serializer):
+    profile_id = serializers.UUIDField()
 
 
-class AttendanceLogSerializer(serializers.ModelSerializer):
-    student_name       = serializers.CharField(source='student.user.get_full_name', read_only=True)
-    student_number     = serializers.IntegerField(source='student.student_id', read_only=True)
-    student_id         = serializers.UUIDField(source='student.id', read_only=True)
-
-    class Meta:
-        model  = AttendanceLog
-        fields = [
-            'id', 'date', 'time', 'status', 'source',
-            'is_modified_by_teacher', 'notes',
-            'student_name', 'student_number', 'student_id',
-        ]
+class CheckInSerializer(serializers.Serializer):
+    code       = serializers.CharField(max_length=20, trim_whitespace=True)
+    session_id = serializers.UUIDField(required=False, allow_null=True)
+    device_id  = serializers.CharField(max_length=200, trim_whitespace=True)
 
 
-class AttendanceSessionSerializer(serializers.ModelSerializer):
-    logs = AttendanceLogSerializer(many=True, read_only=True)
+class CorrectionSerializer(serializers.Serializer):
+    date       = serializers.DateField()
+    profile_id = serializers.UUIDField()
+    status     = serializers.ChoiceField(choices=[AttendanceLog.Status.PRESENT, AttendanceLog.Status.ABSENT])
 
-    class Meta:
-        model  = AttendanceSession
-        fields = ['id', 'date', 'mode', 'started_at', 'ended_at', 'is_active', 'duration_seconds', 'logs']
+
+class RollCallSerializer(serializers.Serializer):
+    date               = serializers.DateField()
+    present_profile_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=True)

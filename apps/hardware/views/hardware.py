@@ -106,16 +106,17 @@ class HardwareSyncView(APIView):
 
         # Add to Redis
         try:
-            added = redis_service.add_submission(
+            result = redis_service.add_submission(
                 session_id=str(session.id),
                 student_int_id=student.student_id,
                 student_name=student.user.get_full_name(),
-                mac='hardware',
+                method='FINGERPRINT',
+                profile_id=str(student.id),
             )
         except redis_service.SessionBusy:
             return Response({'success': False, 'message': 'Busy, please scan again.'}, status=503)
 
-        if not added:
+        if result != redis_service.ADDED:
             return Response({
                 'success': False,
                 'message': f'{student.user.get_full_name()} already recorded or session expired.'

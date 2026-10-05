@@ -45,8 +45,9 @@ class ThrottleTests(TestCase):
     def test_check_in_30_per_minute_per_student(self):
         first = client_for(make_student('one@example.com', 2302001).user)
         second = client_for(make_student('two@example.com', 2302002).user)
-        url = f'/api/sessions/{uuid.uuid4()}/checkin/'
+        url = '/api/sessions/check-in/'
+        body = {'code': '123456', 'session_id': str(uuid.uuid4()), 'device_id': 'phone'}
         for _ in range(30):
-            self.assertEqual(first.post(url, {}, format='json').status_code, 404)
-        self.assert_throttled(first.post(url, {}, format='json'))
-        self.assertEqual(second.post(url, {}, format='json').status_code, 404)
+            self.assertEqual(first.post(url, body, format='json').status_code, 410)  # no such session
+        self.assert_throttled(first.post(url, body, format='json'))
+        self.assertEqual(second.post(url, body, format='json').status_code, 410)

@@ -271,6 +271,7 @@ def save_face_attendance(course_info, present_ids, day=None) -> AttendanceSessio
                 time=time_now, source=AttendanceLog.Source.FACE,
                 status=AttendanceLog.Status.PRESENT if str(student.id) in present_ids
                 else AttendanceLog.Status.ABSENT,
+                method=AttendanceLog.Method.FACE if str(student.id) in present_ids else '',
             )
             for student in enrolled
         ])

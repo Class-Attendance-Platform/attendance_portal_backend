@@ -74,3 +74,26 @@ def expire_session(session_id):
     data = json.loads(cache.get(key))
     data['end_time'] = time.time() - 1
     cache.set(key, json.dumps(data), timeout=3600)
+
+
+def start_session(client, course_info, **body):
+    """Starts a live session (5 minutes, in class unless `body` says otherwise); returns the response."""
+    body.setdefault('duration_minutes', 5)
+    return client.post('/api/sessions/start/', {'course_info_id': str(course_info.id), **body}, format='json')
+
+
+def current_code(session_id):
+    """The session's current 6-digit code (what the teacher's screen shows)."""
+    from apps.attendance import codes
+    from apps.attendance.models import AttendanceSession
+    return codes.current_code(AttendanceSession.objects.get(id=session_id).qr_token)[0]
+
+
+def check_in(student, session_id=None, code=None, device_id=None, by_qr=True):
+    """A student's check-in: by the QR link (session id + code) or, with by_qr=False, the typed code."""
+    if code is None:
+        code = current_code(session_id)
+    body = {'code': code, 'device_id': device_id or f'device-{student.student_id}'}
+    if by_qr and session_id is not None:
+        body['session_id'] = str(session_id)
+    return client_for(student.user).post('/api/sessions/check-in/', body, format='json')

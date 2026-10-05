@@ -12,7 +12,7 @@ from apps.academic.models import Classroom, StudentClassroom
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.services import finalize_session
 from apps.attendance.tests.helpers import (
-    client_for, make_admin, make_course_info, make_semester, make_student, make_teacher,
+    check_in, client_for, make_admin, make_course_info, make_semester, make_student, make_teacher, start_session,
 )
 from apps.faces.services import FaceError, recognize_class, save_face_attendance
 
@@ -38,27 +38,23 @@ class MembershipTestCase(TestCase):
 
 class LiveAttendanceTests(MembershipTestCase):
     def start(self):
-        res = self.teacher_client.post('/api/sessions/start/', {
-            'course_info_id': str(self.ci.id), 'mode': 'QR_ONLINE', 'duration_seconds': 60,
-        }, format='json')
+        res = start_session(self.teacher_client, self.ci)
         self.assertEqual(res.status_code, 201)
         return res.data['session']
 
     def test_former_member_cannot_check_in_or_see_the_session(self):
         session = self.start()
-        res = client_for(self.left.user).post(f'/api/sessions/{session["id"]}/checkin/', {
-            'mac_address': 'web00000000000002', 'qr_token': session['qr_token'],
-        }, format='json')
+        res = check_in(self.left, session['id'])
         self.assertEqual(res.status_code, 403)
-        res = client_for(self.left.user).get(f'/api/sessions/course-info/{self.ci.id}/active/')
-        self.assertFalse(res.data['success'])
-        res = client_for(self.stays.user).get(f'/api/sessions/course-info/{self.ci.id}/active/')
-        self.assertTrue(res.data['success'])
+        res = client_for(self.left.user).get('/api/student/live/')
+        self.assertEqual(res.data['sessions'], [])
+        res = client_for(self.stays.user).get('/api/student/live/')
+        self.assertEqual([s['session_id'] for s in res.data['sessions']], [session['id']])
 
     def test_teacher_cannot_mark_a_former_member(self):
         session = self.start()
         res = self.teacher_client.post(f'/api/sessions/{session["id"]}/mark/', {
-            'student_id': str(self.left.id), 'status': 'PRESENT',
+            'profile_id': str(self.left.id),
         }, format='json')
         self.assertEqual(res.status_code, 400)
 
@@ -80,7 +76,7 @@ class LiveAttendanceTests(MembershipTestCase):
 class TeacherViewTests(MembershipTestCase):
     def test_course_detail_lists_current_members_of_an_active_semester(self):
         res = self.teacher_client.get(f'/api/teacher/course-info/{self.ci.id}/')
-        ids = [s['student_id'] for s in res.data['courseInfo']['students']]
+        ids = [s['student_id'] for s in res.data['students']]
         self.assertEqual(ids, [2302001, 2302003])
 
     def test_finished_semester_keeps_everyone(self):
@@ -88,12 +84,12 @@ class TeacherViewTests(MembershipTestCase):
         self.semester.save()
         StudentClassroom.objects.update(left_at=self.today)  # promoted
         res = self.teacher_client.get(f'/api/teacher/course-info/{self.ci.id}/')
-        ids = [s['student_id'] for s in res.data['courseInfo']['students']]
+        ids = [s['student_id'] for s in res.data['students']]
         self.assertEqual(ids, [2302001, 2302002, 2302003])
 
     def test_roll_call_for_a_date_uses_the_members_on_that_date(self):
-        res = self.teacher_client.post(f'/api/teacher/course-info/{self.ci.id}/history-session/', {
-            'date': '2026-09-01', 'presentStudentIds': [2302001],
+        res = self.teacher_client.post(f'/api/teacher/course-info/{self.ci.id}/roll-call/', {
+            'date': '2026-09-01', 'present_profile_ids': [str(self.stays.id), str(self.late.id)],
         }, format='json')
         self.assertEqual(res.status_code, 200)
         logs = dict(AttendanceLog.objects.filter(date=D1).values_list('student__student_id', 'status'))

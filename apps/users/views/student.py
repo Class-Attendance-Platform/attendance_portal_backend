@@ -5,6 +5,7 @@ from django.shortcuts import get_object_or_404
 
 from apps.users.models import StudentProfile, DeviceBinding
 from apps.users.permissions import IsStudent
+from config.errors import error_response
 
 
 class StudentAttendanceView(APIView):
@@ -14,12 +15,12 @@ class StudentAttendanceView(APIView):
     def get(self, request, uuid):
         from django.db.models import Q
         profile = get_object_or_404(StudentProfile, Q(id=uuid) | Q(user_id=uuid))
-        # Only the student themselves or admin can view
-        if request.user.role == 'STUDENT' and request.user.student_profile.id != profile.id:
-            return Response({'success': False, 'message': 'Forbidden.'}, status=403)
+        # A student sees only their own attendance (teachers and admins may look)
+        if request.user.role == 'STUDENT' and profile.user_id != request.user.id:
+            return error_response('You can only view your own attendance.', status=403, code='permission_denied')
 
         # Import here to avoid circular dependency
-        from apps.attendance.services import get_student_attendance_summary
+        from apps.attendance.records import get_student_attendance_summary
         data = get_student_attendance_summary(profile)
         return Response({'success': True, 'semesters': data})
 
