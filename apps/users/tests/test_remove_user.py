@@ -1,10 +1,15 @@
 from io import StringIO
+from unittest import mock
+
+from django.contrib.admin.models import CHANGE, LogEntry
+from django.contrib.contenttypes.models import ContentType
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 
 from apps.academic.models import CourseInfo
 from apps.attendance.models import AttendanceLog, AttendanceSession
@@ -72,6 +77,39 @@ class RemoveUserTests(TestCase):
         run('old-admin@example.com', '--apply')
         response = client.post('/api/auth/refresh/', {'refresh': newest}, format='json')
         self.assertEqual(response.status_code, 401)
+
+    def test_a_soft_deleted_admin_does_not_count_as_another_admin(self):
+        User.objects.filter(email='old-admin@example.com').update(deleted=True)
+        with self.assertRaisesMessage(CommandError, 'only active admin'):
+            run('new-admin@example.com')
+
+    def test_exact_capitals_pick_one_of_two_lookalike_accounts(self):
+        make_admin('Twin@example.com')
+        make_admin('twin@example.com')
+        with self.assertRaisesMessage(CommandError, 'Several accounts match'):
+            run('TWIN@example.com')
+        run('Twin@example.com', '--apply')
+        self.assertEqual(list(User.objects.filter(email__iexact='twin@example.com').values_list('email', flat=True)),
+                         ['twin@example.com'])
+
+    def test_dry_run_prints_the_django_admin_history(self):
+        LogEntry.objects.log_action(
+            user_id=self.old_admin.pk, content_type_id=ContentType.objects.get_for_model(User).pk,
+            object_id=str(self.new_admin.pk), object_repr='new-admin@example.com (ADMIN)', action_flag=CHANGE,
+            change_message='Changed role.',
+        )
+        out = run('old-admin@example.com')
+        self.assertIn('Its Django admin history', out)
+        self.assertIn('changed new-admin@example.com (ADMIN) Changed role.', out)
+
+    def test_a_failed_delete_keeps_the_tokens_usable(self):
+        client = APIClient()
+        client.post('/api/auth/login/', {'email': 'old-admin@example.com', 'password': PASSWORD}, format='json')
+        with mock.patch.object(User, 'delete', side_effect=RuntimeError('database went away')):
+            with self.assertRaises(RuntimeError):
+                run('old-admin@example.com', '--apply')
+        self.assertTrue(User.objects.filter(email='old-admin@example.com').exists())
+        self.assertFalse(BlacklistedToken.objects.exists())  # blocking was rolled back with it
 
     def test_unknown_email(self):
         with self.assertRaisesMessage(CommandError, 'No account with the email nobody@example.com'):
