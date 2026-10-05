@@ -463,6 +463,8 @@ outside their membership; `changed` = a teacher corrected it.
   classes, generated time) is on the first page and a short running header on the others. XLSX has
   the same header block and keeps #, ID, name and email in view while scrolling. **CSV stays a
   plain table** (one header row, full words) so it opens cleanly in other programs.
+  The file name comes in `Content-Disposition` (e.g. `CSE301_attendance_full.pdf`); CORS exposes that
+  header (`Access-Control-Expose-Headers`) so the web app on its own host can name the download.
 
 ## 9. Data changes (migrations, append-only)
 
