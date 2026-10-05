@@ -114,9 +114,12 @@ REST_FRAMEWORK = {
     # Per IP (login, register, password_forgot) or per user (check_in); see apps/users/throttles.py.
     # Classes behind one shared campus IP may need higher limits: raise them in .env.
     'DEFAULT_THROTTLE_RATES': {
+        # A class signs in together from one campus IP: login counts per IP + email,
+        # with a wide per-IP cap; sign-up and reset counts allow a whole class.
         'login': config('THROTTLE_LOGIN', default='10/min'),
-        'register': config('THROTTLE_REGISTER', default='5/hour'),
-        'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='5/hour'),
+        'login_ip': config('THROTTLE_LOGIN_IP', default='300/min'),
+        'register': config('THROTTLE_REGISTER', default='60/hour'),
+        'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='20/hour'),
         'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
     },
 }

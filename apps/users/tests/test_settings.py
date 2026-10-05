@@ -39,7 +39,8 @@ class SettingsTests(SimpleTestCase):
         self.assertEqual((s.EMAIL_HOST, s.EMAIL_PORT, s.EMAIL_USE_TLS), ('smtp.gmail.com', 587, True))
         self.assertEqual(s.EMAIL_HOST_USER, '')  # empty = password reset by email is off
         self.assertEqual(s.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'], {
-            'login': '10/min', 'register': '5/hour', 'password_forgot': '5/hour', 'check_in': '30/min',
+            'login': '10/min', 'login_ip': '300/min', 'register': '60/hour', 'password_forgot': '20/hour',
+            'check_in': '30/min',
         })
 
     def test_values_from_env(self):

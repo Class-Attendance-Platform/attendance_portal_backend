@@ -1,4 +1,5 @@
-"""Request limits: login 10/min, register 5/hour, password forgot 5/hour (per IP), check-in 30/min per user."""
+"""Request limits: login 10/min per IP + email (300/min per IP), register 60/hour and password forgot
+20/hour per IP, check-in 30/min per user."""
 import uuid
 from unittest import mock
 
@@ -8,6 +9,7 @@ from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 
 from apps.attendance.tests.helpers import client_for, make_student
+from apps.users.throttles import LoginIPThrottle
 
 
 class ThrottleTests(TestCase):
@@ -21,25 +23,41 @@ class ThrottleTests(TestCase):
         self.assertTrue(res.data['message'].startswith('Too many attempts. Please try again in'))
         self.assertIn('Retry-After', res.headers)
 
-    def test_login_10_per_minute_per_ip(self):
+    def test_login_10_per_minute_per_ip_and_email(self):
         client = APIClient()
         body = {'email': 'nobody@example.com', 'password': 'wrong-pass'}
         for _ in range(10):
             self.assertEqual(client.post('/api/auth/login/', body, format='json').status_code, 401)
         self.assert_throttled(client.post('/api/auth/login/', body, format='json'))
+        # Capitals don't make a new count
+        self.assert_throttled(client.post('/api/auth/login/', {**body, 'email': 'NoBody@Example.com'}, format='json'))
         # Another address is counted on its own
         other = client.post('/api/auth/login/', body, format='json', REMOTE_ADDR='10.0.0.9')
         self.assertEqual(other.status_code, 401)
 
-    def test_register_5_per_hour(self):
+    def test_a_whole_class_can_sign_in_from_one_ip(self):
         client = APIClient()
-        for _ in range(5):
+        for n in range(60):  # 60 students, one campus IP, each signing in once
+            body = {'email': f'student{n}@example.com', 'password': 'wrong-pass'}
+            self.assertEqual(client.post('/api/auth/login/', body, format='json').status_code, 401)
+
+    def test_login_has_a_wide_cap_per_ip(self):
+        client = APIClient()
+        with mock.patch.dict(LoginIPThrottle.THROTTLE_RATES, {'login_ip': '20/min'}):
+            for n in range(20):
+                body = {'email': f'spray{n}@example.com', 'password': 'wrong-pass'}
+                self.assertEqual(client.post('/api/auth/login/', body, format='json').status_code, 401)
+            self.assert_throttled(client.post('/api/auth/login/', {'email': 'x@example.com', 'password': 'p'}, format='json'))
+
+    def test_register_60_per_hour(self):
+        client = APIClient()
+        for _ in range(60):
             self.assertEqual(client.post('/api/auth/register/', {}, format='json').status_code, 400)
         self.assert_throttled(client.post('/api/auth/register/', {}, format='json'))
 
-    def test_password_forgot_5_per_hour(self):
+    def test_password_forgot_20_per_hour(self):
         client = APIClient()
-        for _ in range(5):
+        for _ in range(20):
             res = client.post('/api/auth/password/forgot/', {'email': 'a@example.com'}, format='json')
             self.assertEqual(res.status_code, 200)
         self.assert_throttled(client.post('/api/auth/password/forgot/', {'email': 'a@example.com'}, format='json'))

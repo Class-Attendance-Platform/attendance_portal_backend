@@ -258,9 +258,9 @@ In the frontend repo on GitHub: Releases → Draft a new release → "Choose a t
 → "Create new tag on publish", target `master` → Publish release. The builds start by themselves
 (about 20–40 minutes) and add three files to that release:
 
-- `Class-Attendance-Portal-1.0.0.apk` (Android)
-- `Class-Attendance-Portal-Setup-1.0.0.exe` (Windows)
-- `Class-Attendance-Portal-1.0.0.AppImage` (Linux)
+- `HSTU-Attendance-Portal-1.0.0.apk` (Android)
+- `HSTU-Attendance-Portal-Setup-1.0.0.exe` (Windows)
+- `HSTU-Attendance-Portal-1.0.0.AppImage` (Linux)
 
 Share https://github.com/Class-Attendance-Platform/attendance_portal_frontend/releases/latest.
 Use a higher number (`v1.0.1`, `v1.1.0`, ...) for each new version.
