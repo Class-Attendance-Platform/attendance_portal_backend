@@ -451,7 +451,9 @@ outside their membership; `changed` = a teacher corrected it.
   Fixes: generated time in Asia/Dhaka; join dates respected (not enrolled = blank, not absent); the
   PDF splits the date grid across pages so ID, name and % are always visible; header has course,
   semester label, department and teacher.
-  Details: `format` defaults to xlsx (the old app's `export_format` still works); another value →
+  Details: the file name (e.g. `CSE301_attendance_full.pdf`) is in `Content-Disposition`, which CORS
+  exposes so the web app on its own origin can use it. `format` defaults to xlsx (the old app's
+  `export_format` still works); another value →
   400 `code: "invalid_format"`, a bad `date` → 400 `invalid_date`; 404 / 403 as in section 6 (admins
   may export any course). Rows = the course's class list by student id; one column per class date
   (oldest first): PRESENT / ABSENT, blank outside the student's membership (and on their join day
