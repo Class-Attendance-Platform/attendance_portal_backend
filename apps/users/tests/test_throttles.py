@@ -1,9 +1,11 @@
 """Request limits: login 10/min, register 5/hour, password forgot 5/hour (per IP), check-in 30/min per user."""
 import uuid
+from unittest import mock
 
 from django.core.cache import cache
 from django.test import TestCase
 from rest_framework.test import APIClient
+from rest_framework.throttling import SimpleRateThrottle
 
 from apps.attendance.tests.helpers import client_for, make_student
 
@@ -51,3 +53,11 @@ class ThrottleTests(TestCase):
             self.assertEqual(first.post(url, body, format='json').status_code, 410)  # no such session
         self.assert_throttled(first.post(url, body, format='json'))
         self.assertEqual(second.post(url, body, format='json').status_code, 410)
+
+    def test_requests_go_through_when_the_cache_is_down(self):
+        down = mock.Mock(get=mock.Mock(side_effect=ConnectionError('Redis is down')))
+        client = APIClient()
+        body = {'email': 'nobody@example.com', 'password': 'wrong-pass'}
+        with mock.patch.object(SimpleRateThrottle, 'cache', down), self.assertLogs('apps.users.throttles', 'ERROR'):
+            for _ in range(12):
+                self.assertEqual(client.post('/api/auth/login/', body, format='json').status_code, 401)

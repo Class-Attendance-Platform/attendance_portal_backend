@@ -4,8 +4,10 @@ Reading attendance by day (API v2 sections 6 and 7).
 One date = one class: a student is present on a date if any of that day's logs marks them
 present (LATE, old data only, counts as not present). A course's class dates are the dates
 that have any log. For a student only the class dates inside their membership count
-(joined_at <= date < left_at): those are `held`; the others show status null ("not enrolled").
-A class date inside the membership without a log for them counts as absent.
+(joined_at <= date < left_at; on the join day only with a log for them, since a class held
+before they were added that day has none: StudentClassroom.counts_on): those are `held`; the
+others show status null ("not enrolled"). A class date inside the membership without a log for
+them counts as absent.
 """
 from collections import defaultdict
 
@@ -62,12 +64,24 @@ def day_status(logs):
     return (PRESENT if deciding.status == PRESENT else ABSENT), deciding
 
 
+def shown_method(log):
+    """
+    How the student was marked present (section 6), from the log deciding the day. A
+    correction keeps the stored method, so: an absent day shows only TEACHER (a roll call
+    or correction made the log), else null; a present day whose log had no method (absent
+    in a live/face session, then changed by a teacher) shows TEACHER.
+    """
+    if log.status == PRESENT:
+        return log.method or (AttendanceLog.Method.TEACHER if log.is_modified_by_teacher else None)
+    return log.method if log.method == AttendanceLog.Method.TEACHER else None
+
+
 def log_details(log) -> dict:
     """method / changed_by / changed_at of the log that decides a day (None without a log)."""
     if log is None:
         return {'method': None, 'changed_by': None, 'changed_at': None}
     return {
-        'method': log.method or None,
+        'method': shown_method(log),
         'changed_by': person_name(log.changed_by) if log.changed_by_id and log.changed_by else None,
         'changed_at': iso_datetime(log.changed_at),
     }
@@ -96,14 +110,15 @@ def logs_by_day(course_info_ids, student) -> dict:
 def student_days(dates, membership, day_logs) -> list:
     """
     One row per class date (`dates`, newest first): {date, status, method, changed_by,
-    changed_at}; status null outside the membership; `day_logs` = {date: [logs]}.
+    changed_at}; status null outside the membership (and on the join day without a log);
+    `day_logs` = {date: [logs]}.
     """
     rows = []
     for day in dates:
-        if not membership.covers(day):
+        logs = day_logs.get(day)
+        if not membership.counts_on(day, bool(logs)):
             rows.append({'date': iso_date(day), 'status': None, **log_details(None)})
             continue
-        logs = day_logs.get(day)
         status, deciding = day_status(logs) if logs else (ABSENT, None)
         rows.append({'date': iso_date(day), 'status': status, **log_details(deciding)})
     return rows

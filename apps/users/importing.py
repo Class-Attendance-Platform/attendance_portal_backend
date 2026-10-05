@@ -18,7 +18,7 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 
 from apps.academic.services import add_members, join_date, main_classroom
-from apps.users.constants import DEPARTMENT, FACULTY, LEVELS, TERMS
+from apps.users.constants import DEPARTMENT, EMAIL_MAX_LENGTH, FACULTY, LEVELS, TERMS
 from apps.users.models import StudentProfile, User
 from apps.users.services import temporary_password, temporary_password_hash
 
@@ -196,6 +196,8 @@ def plan_import(table):
         email = value(cells, 'email').lower()
         if not email:
             errors.append('Email is missing.')
+        elif len(email) > EMAIL_MAX_LENGTH:
+            errors.append('Email is too long.')
         else:
             try:
                 validate_email(email)

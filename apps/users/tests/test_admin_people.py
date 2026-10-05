@@ -257,6 +257,12 @@ class StudentDetailTests(AdminTestCase):
         self.assertEqual(self.client.patch(self.url, {'email': 'student@example.com', 'student_id': 2302001},
                                            format='json').status_code, 200)
 
+    def test_patch_email_longer_than_150_characters(self):
+        res = self.client.patch(self.url, {'email': f'{"a" * 140}@example.com'}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('email', res.data['errors'])
+        self.assertEqual(User.objects.get(pk=self.student.user.pk).email, 'student@example.com')
+
     def test_put_still_works_for_the_old_app(self):
         res = self.client.put(self.url, {'first_name': 'Old', 'last_name': 'App', 'faculty': 'X',
                                          'current_level': 'Third', 'current_semester': 'II'}, format='json')

@@ -34,6 +34,13 @@ class PublicRegisterTests(TestCase):
     def register(self, data):
         return self.client.post('/api/auth/register/', data, format='json')
 
+    def test_email_longer_than_150_characters(self):
+        email = f'{"a" * 140}@example.com'  # 152: valid, but the username (= email) holds 150
+        res = self.register(self.student(email=email))
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('email', res.data['errors'])
+        self.assertFalse(User.objects.exists())
+
     def test_cannot_register_as_admin(self):
         res = self.register(self.payload('ADMIN'))
         self.assertEqual(res.status_code, 400)

@@ -28,7 +28,8 @@ hardware hidden, one date = one class.
   and filters run on the server with query parameters where listed.
 - Throttles (DRF, per IP unless noted): login 10/min, register 5/hour, password forgot 5/hour,
   check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
-  `Retry-After` header). The rates are settings (section 10).
+  `Retry-After` header). The rates are settings (section 10). The counts live in the cache (Redis);
+  while it cannot be reached the limits are skipped (logged), so signing in never needs Redis.
 
 ## 1. Accounts and sign-in
 
@@ -56,7 +57,9 @@ current_semester}`. Teacher: `{role: "TEACHER", email, password, first_name, las
 employee_id}`. `last_name` may be empty. Faculty and department are set by the server (CSE). Email
 stored lower case.
 Atomic: a duplicate email / student id / employee id gives 400 with a field error (never 500, never a
-half-made account). Password rules: Django validators (8+ chars, not common, not all digits).
+half-made account). Emails hold at most 150 characters (the email is also the username), here and
+in the admin's create/PATCH and import. Password rules: Django validators (8+ chars, not common,
+not all digits).
 201 `{success, status: "pending", message: "Account created. An admin will approve it soon."}`.
 **No tokens.** ADMIN cannot register.
 
@@ -154,7 +157,8 @@ order, case-insensitive): `student_id`, `name` (or `first_name` + `last_name`), 
 ```
 "exists" = a student with that student id or email already exists (skipped). Imported accounts are
 approved. Temporary passwords are random 10-character strings shown once.
-Level also accepts 1–4 / "3rd", term 1 / 2. A row repeating an earlier row's student id or email is an
+Level also accepts 1–4 / "3rd", term 1 / 2. An email over 150 characters is an error ("Email is too
+long."). A row repeating an earlier row's student id or email is an
 error ("Same student ID as row 2."); an email of a teacher/admin account is an error. Applying writes
 only the "create" rows, in one transaction (409 `code: "conflict"` if someone added the same students
 meanwhile); without a class group yet, the semester gets its "Main" one. File problems (not .csv/.xlsx,
@@ -171,6 +175,15 @@ start) and `left_at` (null = current member). It covers the dates `joined_at <= 
 held classes, roll calls, saved sessions and face attendance only count a student on those dates.
 Former members keep their row and their attendance (history stays visible); they are not current
 anywhere (no check-in, live sessions, face matching, "current semester" of the students list).
+**Same-day changes** (one date = one class): on the **join day** a class counts for the student
+only if they have a log for it that day, so a class held before they were added does not count
+(held 0, status null, blank in exports), while a session, roll call or face save after they joined
+logs them and counts. **Leaving** (remove, promote) sets `left_at` = today, or **tomorrow** when the
+class group already held a class today or has a session today (a live one included): that day's
+attendance stays counted and a running session still saves their check-in. Either way they stop
+being current at once (no check-in, live sessions, face matching, not on an active semester's class
+list); until the day ends a later class that day still logs them (absent unless a teacher marks
+them).
 **Class list** = who a semester's or course's lists and numbers count (student counts, averages,
 below-minimum counts, the teacher's course students, exports): its current members while the
 semester is active; once it is finished, everyone who was in it (promotion marks them as left).
@@ -203,13 +216,15 @@ Semester row:
   `{success, students: [{profile_id, student_id, name, email, joined_at, left_at}]}` (current members
   first, each group by student id; `?include_left=true` adds former ones).
   POST /admin/semesters/<id>/students/ `{profile_ids: [..]}` → adds: joined_at = today once the
-  semester has held a class (a late joiner); before its first class joined_at stays null (= from the
-  start, so classes entered later for earlier dates still count); re-adding a former member clears
+  semester has held a class (a late joiner; a class held earlier that day does not count for them,
+  see "Same-day changes"); before its first class joined_at stays null (= from the start, so
+  classes entered later for earlier dates still count); re-adding a former member clears
   left_at and keeps the original joined_at. → `{success, message, added, rejoined, already_in}`
   (counts). An unknown id or a deleted account → 400 (nothing is added). The student's profile
   level/term is not changed (promote does that).
-  POST /admin/semesters/<id>/students/remove/ `{profile_ids: [..]}` → sets left_at = today (history
-  stays visible) → `{success, message, removed}`; ids that are not current members are ignored.
+  POST /admin/semesters/<id>/students/remove/ `{profile_ids: [..]}` → sets left_at = today, or
+  tomorrow if the class group already held or is holding a class today (history stays visible; see
+  "Same-day changes") → `{success, message, removed}`; ids that are not current members are ignored.
   The import (section 2, `semester_id`) adds students the same way.
 - Courses taught in a semester: GET /admin/semesters/<id>/courses/ →
   `{success, courses: [{course_info_id, course: {id, code, title, credits}, teacher: {id, name} |
@@ -227,7 +242,8 @@ Semester row:
   `target_semester_id`) → uses or creates the target semester (`target` reuses a semester that is
   not deleted with the same level, term and session; a new one gets 400 `level_has_active_semester`
   if another active semester of that level exists, the source not counted), marks the moved
-  students left_at = today on the source and adds them to the target like a roster add,
+  students as left on the source like a remove (left_at = today, or tomorrow after a class today)
+  and adds them to the target like a roster add,
   updates their profile level/term, **finishes the source semester** (never deletes). 200
   `{success, message, target_semester_id, moved}`. `profile_ids` must be current members (400
   otherwise); deleted accounts are not moved; target = source → 400. The old
@@ -280,7 +296,9 @@ in-app scanner reads `s` and `c` from the same URL).
 
 **One phone, one student per session:** every check-in sends `device_id` (a random id the app keeps
 per install/browser). If that device already checked in a *different* student in this session:
-409 `code: "device_used"`. No permanent binding; DeviceBinding is no longer checked.
+409 `code: "device_used"`. No permanent binding; DeviceBinding is no longer checked. The old
+GET /student/verify-device/<student_id>/ (used by the offline laptop server with the teacher's
+token) is for teachers and admins only (403 `permission_denied` for students).
 
 Teacher (owner of the course, or admin):
 - POST /sessions/start/ `{course_info_id, delivery, duration_minutes: 2|5|10|15}` → 201
@@ -289,7 +307,7 @@ Teacher (owner of the course, or admin):
   this course (a session whose timer ran out is saved first and does not block). `delivery`
   defaults to IN_CLASS and `duration_minutes` to 5; other values → 400. Optional `mode` (default
   `QR_ONLINE`; `FINGERPRINT` / `QR_OFFLINE` stay for the hidden fingerprint devices and the offline
-  laptop server; `FACE` → 400).
+  laptop server; `FACE` → 400). 404 for a deleted course-info, course or semester.
 - GET /sessions/<id>/code/ → `{success, code: "482913", check_in_url, expires_in /* s until it
   changes */, period: 30}`. Poll every few seconds. 410 `session_ended` once the session is over
   (an expired one is saved); 400 `no_code` for a fingerprint session.
@@ -325,8 +343,9 @@ Student:
   400 `code_invalid` ("This code is wrong or has expired. Check the newest code."),
   403 `not_enrolled`, 409 `already_checked_in`, 409 `device_used`, 410 `session_ended`.
   With `session_id` (the QR link or the in-app scanner) the method is QR; without it, CODE. An
-  unknown or cancelled `session_id` → 410 `session_ended`; a typed code that matches none of the
-  student's own live sessions → 400 `code_invalid`. `code` is a string (spaces are ignored);
+  unknown or cancelled `session_id`, or one of a deleted course or semester → 410 `session_ended`;
+  a typed code that matches none of the student's own live sessions → 400 `code_invalid`. `code` is
+  a string (spaces and dashes are ignored; digits of other scripts, e.g. Bengali ০–৯, count as 0–9);
   `device_id` is required (400 field error). The live data keeps each check-in's method, time and
   device id.
 - The old `/sessions/<id>/checkin/` and `/sessions/course-info/<id>/active/` (which leaked the QR token)
@@ -351,7 +370,8 @@ view/export only). Course:
   dates: [{date, present, total}]   // newest first; one date = one class
 }
 ```
-`held` counts only class dates on or after the student's `joined_at` (and before `left_at`);
+`held` counts only class dates on or after the student's `joined_at` (and before `left_at`; on the
+join day only a class that logged them, see section 3 "Same-day changes");
 `percent` = attended / held (null when held = 0; never "Low" with no classes).
 
 ### GET /teacher/course-info/<id>/students/<profile_id>/
@@ -367,6 +387,9 @@ student (one date = one class: PRESENT if any log that day says so; method/chang
 log), by student id. `?date=YYYY-MM-DD` and `?student_id=<profile_id>` narrow it (bad values →
 400). In `days` and `logs`, `method` is how the student was marked present: QR, CODE, FACE, TEACHER
 (roll call or correction-created logs: either status), or null (absent in a live/face session).
+It follows the day's status (corrections keep the stored method): an absent day shows only
+TEACHER or null (a QR check-in corrected to absent shows null); a present day whose log had no
+method (absent in a live/face session, then corrected) shows TEACHER.
 `changed_at` is a date-time; `changed_by` a name.
 
 ### PUT /teacher/course-info/<id>/attendance/
@@ -392,21 +415,24 @@ method TEACHER.
 Deletes that date's classes and logs (the UI asks for confirmation) → `{success, message, deleted
 /* logs */}`. 409 `session_running` while a live session runs on that date; a bad date → 400.
 
-All section 6 endpoints answer 404 for a deleted course, course-info or semester, and 403 (`You
-do not teach this course.`) for another teacher's course. The course list is ordered like the
+All section 6 endpoints answer 404 for a deleted course, course-info or semester, and 403 (`code:
+"permission_denied"`, `You do not teach this course.`) for another teacher's course (as do the
+section 5 session endpoints and the export). The course list is ordered like the
 semesters list, then by course code. The student endpoint answers 404 for a student who was never
 in the course's class group.
 
 ## 7. Student
 
 ### GET /student/<user_or_profile_id>/semesters/ (exists, fixed)
+For the student themself or an admin (403 `permission_denied` for another student and for
+teachers: they see students through their own courses, section 6).
 Only the student's **own** class group's courses; semesters sorted by level then term (First,
 Second, Third, Fourth; I, II); percentages count from `joined_at`. Per course adds
 `{course_info_id, held, attended, percent, below_min, classes_needed /* to reach the minimum; 0 if
 already there */}` and per semester `{label, is_active, overall_percent, joined_at, left_at}`
 (their membership: semesters they left are still listed, with `left_at` set = history only, not
 current). `held` = the course's class dates inside the membership (a class date without a log for
-them counts as absent); `overall_percent` = attended / held over all the semester's courses (null
+them counts as absent; on the join day only a class that logged them, section 3); `overall_percent` = attended / held over all the semester's courses (null
 when nothing is held); `classes_needed` = classes in a row to attend (null if the minimum can never
 be reached, e.g. a 100% minimum). The older keys stay with the same numbers (`totalClasses` = held,
 `presentCount` = attended, `percentage`, `history` over the held dates, oldest first).
@@ -428,7 +454,8 @@ outside their membership; `changed` = a teacher corrected it.
   Details: `format` defaults to xlsx (the old app's `export_format` still works); another value →
   400 `code: "invalid_format"`, a bad `date` → 400 `invalid_date`; 404 / 403 as in section 6 (admins
   may export any course). Rows = the course's class list by student id; one column per class date
-  (oldest first): PRESENT / ABSENT, blank outside the student's membership; then held, present and
+  (oldest first): PRESENT / ABSENT, blank outside the student's membership (and on their join day
+  for a class held before they were added, section 3); then held, present and
   percent counted as in section 6 (none held = blank / "-"). With `date`: one Status column (blank
   also when that date had no class). PDF and DOCX (landscape A4) show P / A with a legend and
   split the dates into pages of about 15, each repeating #, student ID, name, held, present and %
@@ -444,6 +471,16 @@ outside their membership; `changed` = a teacher corrected it.
 - academic: `Semester.session` (CharField, blank); `StudentClassroom.joined_at` (DateField, null =
   "from the start", which is what existing rows get) and `left_at` (null) (0002); data migration
   0003 gives every semester without a class group an empty "Main" one.
+- Management command `backfill_join_dates` (run once after migrating; dry run by default,
+  `--apply` writes): existing rows got joined_at null, so students added mid-semester under the
+  old app would count as absent for every class before they joined. The old app logged every
+  member whenever a class was saved, so for each membership with joined_at null (class dates
+  before its `left_at` only): joined_at = the student's first log date in the class group's
+  courses when the group held classes before it; with no log at all but classes held, the last
+  class date (it does not count for them without a log); otherwise it stays null. The dry run
+  lists student, semester, the new date and held/percent before → after. Limits: an old class
+  re-saved later also logged that time's late joiners, so a guess can be earlier than the real
+  join (it never hides a class they have a log for).
 - attendance: `AttendanceSession.delivery` (IN_CLASS default); `AttendanceLog.changed_by` (FK user,
   null, SET_NULL) and `changed_at` (null); new `AttendanceChange` (log FK, old_status, new_status,
   changed_by, changed_at) (0003). Also `AttendanceLog.method` (QR | CODE | FACE | TEACHER |

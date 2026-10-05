@@ -4,7 +4,9 @@ present on a date if any session that day marked them present.
 
 For each student on a course's class list (StudentClassroom.objects.class_list: current
 members of an active semester; everyone who was in a finished one):
-- held = the course's class dates inside their membership (joined_at <= date < left_at)
+- held = the course's class dates inside their membership (joined_at <= date < left_at); on
+  the join day only if they have a log that day (StudentClassroom.counts_on: a class held
+  before they were added does not count for them)
 - attended = those dates on which they were present
 - percent = attended / held * 100 (None when held = 0: never "low" without classes)
 """
@@ -26,6 +28,7 @@ class StudentNumbers:
     membership: StudentClassroom
     attended: int = 0
     held: int = 0
+    dates: frozenset = frozenset()   # the held dates
 
     @property
     def percent(self):
@@ -84,15 +87,28 @@ def course_numbers(course_infos) -> dict:
         logs.filter(status=AttendanceLog.Status.PRESENT).values_list('course_info_id', 'student_id', 'date').distinct()
     ):
         present[(ci_id, student_id)].add(day)
+    # Who has a log on their join day (a class held before they were added that day has none)
+    join_days = {m.joined_at for ms in class_lists.values() for m in ms if m.joined_at}
+    logged = set()
+    if join_days:
+        joiners = {m.student_id for ms in class_lists.values() for m in ms if m.joined_at}
+        logged = set(
+            logs.filter(student_id__in=joiners, date__in=join_days)
+            .values_list('course_info_id', 'student_id', 'date').distinct()
+        )
 
     result = {}
     for ci in course_infos:
         numbers = CourseNumbers(class_dates=sorted(dates[ci.id], reverse=True))
         for membership in class_lists[ci.classroom_id]:
-            held = [d for d in numbers.class_dates if membership.covers(d)]
+            held = [
+                d for d in numbers.class_dates
+                if membership.counts_on(d, (ci.id, membership.student_id, d) in logged)
+            ]
             here = present.get((ci.id, membership.student_id), set())
             numbers.students[membership.student_id] = StudentNumbers(
                 membership=membership, held=len(held), attended=sum(d in here for d in held),
+                dates=frozenset(held),
             )
         result[ci.id] = numbers
     return result

@@ -5,8 +5,9 @@ Each export_* function takes a CourseInfo and an optional date and returns an Ht
 They all read one `Report` (build_report):
 - rows = the course's class list (StudentClassroom.objects.class_list), by student id
 - one date = one class: a student is present on a date if any log that day says PRESENT
-- a cell outside the student's membership (joined_at <= date < left_at) is blank, not absent;
-  held / attended / percent count only the class dates inside it (apps/academic/stats.py)
+- a cell outside the student's membership (joined_at <= date < left_at; on the join day a
+  class held before they were added) is blank, not absent; held / attended / percent count
+  only the class dates inside it (apps/academic/stats.py)
 - times are local (Asia/Dhaka)
 The PDF and DOCX split the date grid into pages that each repeat #, student ID, name and the
 totals, so ID, name and % are always visible. The CSV stays a plain table (one header row).
@@ -174,7 +175,7 @@ def build_report(course_info, filter_date=None) -> Report:
         membership = n.membership
         cells = []
         for day in report.dates:
-            if not report.class_on_date or not membership.covers(day):
+            if not report.class_on_date or day not in n.dates:
                 cells.append('')
             else:
                 cells.append(PRESENT if (profile_id, day) in present else ABSENT)

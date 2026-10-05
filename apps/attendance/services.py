@@ -249,8 +249,11 @@ def _set_status(course_info, student, day, status, logs, user, now, record_new):
 
 
 def _lock_course(course_info):
-    """Serialises corrections of one course (no double logs from double taps)."""
-    CourseInfo.objects.select_for_update().filter(pk=course_info.pk).first()
+    """
+    Serialises corrections of one course (no double logs from double taps). Locks only this
+    row: order_by() drops CourseInfo's Meta ordering, whose joins FOR UPDATE would lock too.
+    """
+    CourseInfo.objects.select_for_update().filter(pk=course_info.pk).order_by().first()
 
 
 def correct_attendance(course_info, student, day, status, user) -> bool:

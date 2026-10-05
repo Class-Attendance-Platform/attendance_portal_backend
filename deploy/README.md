@@ -376,7 +376,17 @@ cd /var/www/attendanceportal-backend && git pull && venv/bin/pip install -r requ
    "Email for password reset" and `.env.example`). Restart the API after changing `.env`.
 3. Accounts left half-made by the old sign-up page: run the dry run in "Broken sign-ups" above,
    send the output, then the same with `--apply`.
-4. Web app: rebuild it:
+4. Students added to a semester after its first class (under the old app) have no join date yet,
+   so their earlier classes would count as absent. This lists the join dates it would set (from
+   each student's first attendance record), with their numbers before and after, without changing
+   anything:
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py backfill_join_dates --settings=config.settings.production
+```
+
+   Send the output; after a yes, the same with `--apply` writes them.
+5. Web app: rebuild it:
 
 ```bash
 cd /var/www/attendanceportal-frontend && git pull && npm ci && npm run build:web
