@@ -15,6 +15,16 @@ Nothing here touches the other sites on the server. Start after both pull reques
 
 Run the commands as root: start with `sudo -i`.
 
+## 0. DNS
+
+At your domain provider, add two `A` records pointing to this server's IP address:
+`api.attendanceportal` and `attendanceportal` (under `sakibkx.tech`). certbot (step 5) only works
+once both names point here. Check (read-only; both lines should show the server's IP):
+
+```bash
+getent ahostsv4 api.attendanceportal.sakibkx.tech | head -1; getent ahostsv4 attendanceportal.sakibkx.tech | head -1
+```
+
 ## 1. Get the code
 
 ```bash
