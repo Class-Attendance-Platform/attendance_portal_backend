@@ -10,6 +10,9 @@ Same-day changes: the day someone joins or leaves is split around the classes al
 that day. Joining: joined_at = today, and a class held before they were added does not count
 for them (StudentClassroom.counts_on). Leaving: left_at = tomorrow when the class group
 already held (or is holding) a class today, so that class still counts (leave_date).
+
+One current semester: a student may be a current member of one active semester only. Adding,
+promoting or reopening checks it first (check_one_semester) and changes nothing on a clash.
 """
 from datetime import timedelta
 
@@ -88,6 +91,37 @@ def leave_date(classroom, today=None):
     return today + timedelta(days=1) if held_today else today
 
 
+class AlreadyInSemester(Exception):
+    """Some students are current members of another active semester (`memberships` there)."""
+
+    def __init__(self, memberships):
+        super().__init__('Some students are already in another semester.')
+        self.memberships = memberships
+
+
+def check_one_semester(profile_ids, exclude=(), moving=None):
+    """
+    Raises AlreadyInSemester if any of these students is a current member (left_at null) of
+    an active semester other than `exclude` (semesters); memberships in `moving` (a class group
+    that changes semester) are not counted. Call it inside the transaction that makes them
+    members: it locks their profile rows, so two admins cannot each add the same student to
+    another semester at the same time.
+    """
+    profile_ids = list(profile_ids)
+    list(StudentProfile.objects.select_for_update().filter(id__in=profile_ids).order_by('pk'))
+    clashes = (
+        StudentClassroom.objects.current().filter(
+            student_id__in=profile_ids, classroom__deleted=False,
+            classroom__semester__is_active=True, classroom__semester__deleted=False,
+        ).exclude(classroom__semester__in=[s.pk for s in exclude])
+    )
+    if moving is not None:
+        clashes = clashes.exclude(classroom=moving)
+    clashes = list(clashes.select_related('student__user', 'classroom__semester'))
+    if clashes:
+        raise AlreadyInSemester(clashes)
+
+
 def add_members(classroom, profiles, joined_at) -> dict:
     """
     Adds students to a class group. A former member comes back with left_at cleared and
@@ -125,7 +159,8 @@ def promote(source, target, profile_ids=None, today=None) -> int:
     Moves current members of `source` (all, or only `profile_ids`) to `target`: left_at =
     leave_date on the source (today, or tomorrow after a class today), joined on the target,
     profile level/term set to the target's. The source semester is finished (never deleted).
-    Returns how many students moved.
+    Returns how many students moved. Raises AlreadyInSemester (nothing changes) when one of
+    them is a current member of a third active semester.
     """
     today = today or timezone.localdate()
     with transaction.atomic():
@@ -136,6 +171,7 @@ def promote(source, target, profile_ids=None, today=None) -> int:
         members = list(members.select_related('student'))
         profiles = [m.student for m in members]
 
+        check_one_semester([p.id for p in profiles], exclude=[source, target])
         add_members(main_classroom(target), profiles, join_date(target, today))
         StudentClassroom.objects.filter(id__in=[m.id for m in members]).update(
             left_at=leave_date(source_room, today),

@@ -27,6 +27,9 @@ one class.
   are snake_case.**
 - Dates `YYYY-MM-DD` (Asia/Dhaka local date). Date-times ISO 8601 with offset. The app formats them
   for people ("05 Oct 2026").
+- Percentages (`percent`, `overall_percent`, `average_percent`, the exports) have one decimal,
+  **rounded down** (2 of 3 = 66.6; 82.95 → 82.9), so none reads higher than it is. The app shows
+  whole numbers, also rounded down, and does no percent maths of its own.
 - "Student id" means the university roll number (`student_id`, an integer like 2302001). Database
   ids are UUIDs and are named `id`, `user_id`, `profile_id`, `course_info_id`, `session_id`.
 - Lists the admin pages show are returned whole (one department is small: hundreds of rows). Search
@@ -196,6 +199,18 @@ them).
 below-minimum counts, the teacher's course students, exports): its current members while the
 semester is active; once it is finished, everyone who was in it (promotion marks them as left).
 Soft-deleted student accounts are left out of rosters, class lists and counts.
+**One current semester.** A student may be a current member (`left_at` null) of one active
+semester only. Adding students (the roster POST below and the older
+`/admin/classrooms/<id>/students/`), promoting, reopening and moving an older class group to
+another semester (PUT `/admin/classrooms/<id>/`) check it first and change nothing on a
+clash: 409 `code: "already_in_semester"` with `students: [{profile_id, student_id, name,
+semester_id, semester_label}]` (one row per student: the other active semester they are in now)
+and a message naming them: "Ayesha Rahman (2302001) is already in Level 3 · Term I · 2025-26.
+Remove them from that semester first."; several: "3 students are already in another semester:
+Ayesha Rahman (2302001), … Remove them there first." (at most five names, then "and N more").
+Memberships they left and finished or deleted semesters never clash (promotion finishes its
+source). The import adds only new accounts and restoring an account changes no memberships, so
+neither can clash.
 
 Semester row:
 ```
@@ -217,7 +232,10 @@ Semester row:
   ignored). DELETE = soft delete (also finishes it) → `{success, message}`. PATCH/DELETE of a deleted
   semester → 404.
 - POST /admin/semesters/<id>/finish/, POST /admin/semesters/<id>/reopen/ (400
-  `level_has_active_semester` if its level has another active semester), POST
+  `level_has_active_semester` if its level has another active semester; 409 `already_in_semester`
+  when some of its current members, deleted accounts too, are current members of another active
+  semester: "Ayesha Rahman (2302001) is now in Level 4 · Term I · 2025-26. Remove them from this
+  semester before reopening it."), POST
   /admin/semesters/<id>/restore/ (comes back finished; reopen it if needed). Each →
   `{success, message, semester}`; finish/reopen of a deleted semester → 404.
 - Roster: GET /admin/semesters/<id>/students/ →
@@ -228,8 +246,9 @@ Semester row:
   see "Same-day changes"); before its first class joined_at stays null (= from the start, so
   classes entered later for earlier dates still count); re-adding a former member clears
   left_at and keeps the original joined_at. → `{success, message, added, rejoined, already_in}`
-  (counts). An unknown id or a deleted account → 400 (nothing is added). The student's profile
-  level/term is not changed (promote does that).
+  (counts). An unknown id or a deleted account → 400 (nothing is added). A student who is a
+  current member of another active semester → 409 `already_in_semester` (nothing is added; see
+  "One current semester"). The student's profile level/term is not changed (promote does that).
   POST /admin/semesters/<id>/students/remove/ `{profile_ids: [..]}` → sets left_at = today, or
   tomorrow if the class group already held or is holding a class today (history stays visible; see
   "Same-day changes") → `{success, message, removed}`; ids that are not current members are ignored.
@@ -255,7 +274,8 @@ Semester row:
   and adds them to the target like a roster add,
   updates their profile level/term, **finishes the source semester** (never deletes). 200
   `{success, message, target_semester_id, moved}`. `profile_ids` must be current members (400
-  otherwise); deleted accounts are not moved; target = source → 400. The old
+  otherwise); deleted accounts are not moved; target = source → 400; a moved student who is also
+  a current member of a third active semester → 409 `already_in_semester` (nothing changes). The old
   `/admin/classrooms/<id>/promote/` stays but is unused.
 
 Courses: GET/POST /admin/courses/, GET/PATCH/DELETE /admin/courses/<id>/ (as today, PATCH partial;
@@ -279,18 +299,18 @@ from teachers and students too (and from the semester's courses and the course-i
 - `counts.students` / `teachers`: approved accounts that are not deleted; `courses`: not deleted.
 - `semesters`: the active ones, in the semesters list's order. A student's percent in a course =
   attended / held over their class dates (section 6). `average_percent` = mean of every (student,
-  course) percent with held > 0 (one decimal; null when nothing is held); `below_min_count` =
-  students below `ATTENDANCE_MIN_PERCENT` in at least one course.
+  course) percent with held > 0 (one decimal, rounded down; null when nothing is held);
+  `below_min_count` = students below `ATTENDANCE_MIN_PERCENT` in at least one course.
 - `recent_sessions`: finished sessions of courses that are not deleted, newest saved first;
   `present` / `total` = its PRESENT logs / all its logs, of accounts that are not deleted.
 
 The admin opens any course's attendance through the teacher endpoints in section 6 (admins pass
 `can_manage_course`); the admin UI is read-only there. List of all taught courses:
 GET /admin/course-info/ (exists) with `?semester_id=` (not a valid id → 400); key `course_infos`; row
-`{id, course: {id, code, title}, teacher: {id, name, deleted} | null, semester: {id, label, is_active},
-student_count, classes_held, average_percent}` (class list; classes_held = class dates; average as
-above, null without classes). Leaves out deleted course-infos, courses and semesters; ordered like
-the semesters list, then by course code.
+`{id, course: {id, code, title}, teacher: {id, name, deleted} | null, semester: {id, label, is_active,
+start_date, end_date}, student_count, classes_held, average_percent}` (class list; classes_held =
+class dates; average as above, null without classes). Leaves out deleted course-infos, courses and
+semesters; ordered like the semesters list, then by course code.
 
 ## 5. Live attendance sessions (rotating code)
 
@@ -357,7 +377,10 @@ Student:
   403 `not_enrolled`, 409 `already_checked_in`, 409 `device_used`, 410 `session_ended`.
   With `session_id` (the QR link or the in-app scanner) the method is QR; without it, CODE. An
   unknown or cancelled `session_id`, or one of a deleted course or semester → 410 `session_ended`;
-  a typed code that matches none of the student's own live sessions → 400 `code_invalid`. `code` is
+  a typed code that matches none of the student's own live sessions → 400 `code_invalid`, or 403
+  `not_enrolled` ("You are not on a class list yet. Ask the department office to add you.") when
+  the student is not a current member of an active semester's class group (no code can work for
+  them: never added, removed, or only in finished or deleted semesters). `code` is
   a string (spaces and dashes are ignored; digits of other scripts, e.g. Bengali ০–৯, count as 0–9);
   `device_id` is required (400 field error). The live data keeps each check-in's method, time and
   device id.
@@ -370,7 +393,8 @@ Student:
 `{success, current: [Course], previous: [Course]}` (previous = finished semesters; the UI makes them
 view/export only). Course:
 ```
-{ course_info_id, code, title, credits, semester: {id, label, is_active},
+{ course_info_id, code, title, credits,
+  semester: {id, label, is_active, start_date, end_date /* YYYY-MM-DD | null */},
   student_count, classes_held, average_percent, below_min_count, face_registered_count,
   live_session_id | null }
 ```
@@ -385,7 +409,8 @@ view/export only). Course:
 ```
 `held` counts only class dates on or after the student's `joined_at` (and before `left_at`; on the
 join day only a class that logged them, see section 3 "Same-day changes");
-`percent` = attended / held (null when held = 0; never "Low" with no classes).
+`percent` = attended / held (one decimal, rounded down; null when held = 0; never "Low" with no
+classes).
 
 ### GET /teacher/course-info/<id>/students/<profile_id>/
 `{success, student: {profile_id, student_id, name, email, joined_at, left_at, attended, held,
@@ -397,7 +422,8 @@ percent}, days: [{date, status: "PRESENT"|"ABSENT"|null /* null = not enrolled y
 [{session_id, delivery, mode}], logs: [{profile_id, student_id, name, status, method, changed_by,
 changed_at}]}`. `sessions` = that day's saved sessions (a roll call has none); `logs` = one row per
 student (one date = one class: PRESENT if any log that day says so; method/changed_* from that
-log), by student id. `?date=YYYY-MM-DD` and `?student_id=<profile_id>` narrow it (bad values →
+log; on an absent day from the log a teacher changed last, else its first log), by student id.
+`?date=YYYY-MM-DD` and `?student_id=<profile_id>` narrow it (bad values →
 400). In `days` and `logs`, `method` is how the student was marked present: QR, CODE, FACE, TEACHER
 (roll call or correction-created logs: either status), or null (absent in a live/face session).
 It follows the day's status (corrections keep the stored method): an absent day shows only
@@ -422,20 +448,32 @@ version, students: [{profile_id, student_id, name, joined_at, left_at, status:
 left since are included, deleted accounts are not), by student id; `status` = their day status as
 in the history (null = no log that day). `live_session_id` = a live session of the course on that
 date (still taking check-ins). `version` = a short fingerprint of the list and its statuses (send it
-back with the POST). A missing or bad date → 400; future dates → 400 `code: "future_date"`.
+back with the POST). A missing or bad date → 400; future dates → 400 `code: "future_date"`; a date
+outside the course's semester → 400 `code: "outside_semester"`: before its `start_date` (when set),
+or after its `end_date` once the semester is finished (when set; an active semester may hold a
+make-up class after it). The message names the dates that apply: "Pick a date in this course's
+semester (28 Aug 2026 to 15 Dec 2026)." ("from 28 Aug 2026" / "until 15 Dec 2026" with one).
+Corrections (PUT attendance) need an existing class and are not limited.
 
 ### POST /teacher/course-info/<id>/roll-call/  (replaces history-session POST)
-Body `{date, present_profile_ids: [..], version?}`. Creates the class for that date if missing (source
-TEACHER/MANUAL). For each student enrolled on that date: creates a log if missing; changes an
-existing log only if its status differs (recorded like a correction). Never re-labels other methods.
-Future dates → 400 `code: "future_date"`. 409 `code: "session_running"` (with `session_id`) while a
-live session runs on that date (mark students in the session instead). With `version` (from the GET):
+Body `{date, present_profile_ids: [..], absent_profile_ids?: [..], version?}`. Creates the class for
+that date if missing (source TEACHER/MANUAL). Students in `present_profile_ids` become present.
+With `absent_profile_ids` (the app always sends it), those become absent and every other student
+enrolled that date is left as is: no log is made for them and an existing log is not changed (on
+their join day a class without a log does not count for them, section 3). Without it (older apps),
+every other student enrolled that date becomes absent. A student in both lists → 400 field error
+("A student cannot be both present and absent."). A log is created if missing; an existing log
+changes only if its status differs (recorded like a correction). Never re-labels other methods.
+Future dates → 400 `code: "future_date"`; dates outside the semester → 400 `outside_semester` (as
+the GET). 409 `code: "session_running"` (with `session_id`) while a live session runs on that date
+(mark students in the session instead). With `version` (from the GET):
 409 `code: "date_changed"` ("This date changed since you opened it. Check the list and save again.")
 when the date's list or statuses changed since (a saved session, a correction, another roll call):
-nothing is saved. 200 `{success, message, date, present, absent, changed}` (`present`/`absent` =
-students enrolled that date; `changed` = students whose existing status changed). Ids of students
-not enrolled on that date are ignored. Created logs: source MANUAL, method TEACHER. Roll call and
-corrections also work for finished semesters.
+nothing is saved. 200 `{success, message, date, present, absent, unmarked, changed}`: the day status
+of the students enrolled that date afterwards (`present` + `absent` + `unmarked` = all of them;
+`unmarked` = no log that day, always 0 without `absent_profile_ids`); `changed` = students whose
+existing status changed. Ids of students not enrolled on that date are ignored. Created logs:
+source MANUAL, method TEACHER. Roll call and corrections also work for finished semesters.
 
 ### DELETE /teacher/course-info/<id>/history-session/<date>/ (exists)
 Deletes that date's classes and logs (the UI asks for confirmation) → `{success, message ("The class
@@ -461,16 +499,25 @@ current). `held` = the course's class dates inside the membership (a class date 
 them counts as absent; on the join day only a class that logged them, section 3); `overall_percent` = attended / held over all the semester's courses (null
 when nothing is held); `classes_needed` = classes in a row to attend (null if the minimum can never
 be reached, e.g. a 100% minimum). The older keys stay with the same numbers (`totalClasses` = held,
-`presentCount` = attended, `percentage`, `history` over the held dates, oldest first).
+`presentCount` = attended, `percentage` (two decimals, also rounded down), `history` over the held
+dates, oldest first). Sessions of their class groups whose timer ran out are saved first (as the
+course page does), so these numbers match it.
 
 ### GET /student/course-info/<id>/
 `{success, course: {course_info_id, code, title, credits, teacher_name, semester: {label,
-is_active}}, joined_at, left_at, attended, held, percent, classes_needed, days: [{date, status, method,
-changed: bool}]}` for the signed-in student only (403 `code: "not_enrolled"` if they were never in its
+is_active, start_date, end_date}}, joined_at, left_at, attended, held, percent, classes_needed,
+days: [{date, status, method, changed: bool, absent_reason}]}` for the signed-in student only (403
+`code: "not_enrolled"` if they were never in its
 class group; former members still see it). `joined_at` / `left_at` = their membership (as in the
 semesters summary; `left_at` set = a former member). `days`: every class date of the course, newest
 first; status null = outside their membership (before `joined_at`, on the join day for a class held
 before they were added, or from `left_at` on); `changed` = a teacher corrected it.
+`absent_reason` (null unless status is ABSENT), from the log that decides the day (section 6,
+history): `"changed"` = a teacher corrected it to absent; `"roll_call"` = marked absent in a roll
+call (method TEACHER, never corrected); `"class_photo"` = absent in a class photo (FACE) session;
+`"not_checked_in"` = absent in a live session (QR / typed code / old device), also a class date
+without a log for them. The app's words: "Marked absent by teacher", "Marked absent in roll call",
+"Not found in the class photo", "Not checked in".
 
 ## 8. Faces, reports
 
@@ -487,13 +534,16 @@ before they were added, or from `left_at` on); `changed` = a teacher corrected i
   may export any course). Rows = the course's class list by student id; one column per class date
   (oldest first): PRESENT / ABSENT, blank outside the student's membership (and on their join day
   for a class held before they were added, section 3); then held, present and
-  percent counted as in section 6 (none held = blank / "-"). With `date`: one Status column (blank
+  percent counted as in section 6 (one decimal, rounded down; none held = blank / "-"). With
+  `date`: one Status column (blank
   also when that date had no class). PDF and DOCX (landscape A4) show P / A with a legend and
   split the dates into pages of about 15, each repeating #, student ID, name, held, present and %
   (below the minimum in red); the header block (course, semester label, department, teacher,
   classes, generated time) is on the first page and a short running header on the others. XLSX has
   the same header block and keeps #, ID, name and email in view while scrolling. **CSV stays a
-  plain table** (one header row, full words) so it opens cleanly in other programs.
+  plain table** (one header row, full words) so it opens cleanly in other programs: `text/csv;
+  charset=utf-8` starting with a UTF-8 byte order mark, so Excel on Windows shows names with
+  letters outside English correctly.
   The file name comes in `Content-Disposition` (e.g. `CSE301_attendance_full.pdf`); CORS exposes that
   header (`Access-Control-Expose-Headers`) so the web app on its own host can name the download.
 

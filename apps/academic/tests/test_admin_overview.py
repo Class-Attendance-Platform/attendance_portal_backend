@@ -5,7 +5,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.academic.models import Course, CourseInfo, StudentClassroom
-from apps.academic.stats import course_numbers
+from apps.academic.stats import course_numbers, round_percent
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.tests.helpers import (
     client_for, make_admin, make_course_info, make_semester, make_student, make_teacher,
@@ -89,7 +89,8 @@ class CourseInfoListTests(NumbersTestCase):
             'id': str(self.ci.id),
             'course': {'id': str(self.ci.course_id), 'code': 'CSE301', 'title': 'Course CSE301'},
             'teacher': {'id': str(self.teacher.id), 'name': 'Nadia Islam', 'deleted': False},
-            'semester': {'id': str(self.semester.id), 'label': 'Level 3 · Term I · 2025-26', 'is_active': True},
+            'semester': {'id': str(self.semester.id), 'label': 'Level 3 · Term I · 2025-26', 'is_active': True,
+                         'start_date': None, 'end_date': None},
             'student_count': 3,
             'classes_held': 4,
             'average_percent': 58.3,
@@ -168,3 +169,39 @@ class OverviewTests(NumbersTestCase):
 
     def test_admins_only(self):
         self.assertEqual(client_for(self.teacher.user).get('/api/admin/overview/').status_code, 403)
+
+
+class PercentRoundingTests(TestCase):
+    """Percentages have one decimal, rounded down everywhere: never shown higher than they are."""
+
+    def test_round_percent(self):
+        self.assertEqual(round_percent(200 / 3), 66.6)
+        self.assertEqual(round_percent(912.5 / 11), 82.9)  # 82.95, not 83.0
+        self.assertEqual(round_percent(1700 / 21), 80.9)   # 17 of 21 = 80.95
+        self.assertEqual(round_percent(74.99999999999999), 75.0)  # a float just under an exact tenth
+        self.assertEqual((round_percent(100.0), round_percent(0.0), round_percent(None)), (100.0, 0.0, None))
+
+    def test_every_page_rounds_down(self):
+        admin = client_for(make_admin('admin@example.com'))
+        teacher = make_teacher('t@example.com')
+        a, b, c = (make_student(f'{name}@example.com', 2302001 + i) for i, name in enumerate('abc'))
+        ci = make_course_info(teacher, semester=make_semester(students=[a, b, c]))
+        for day in (D1, D2, D3):
+            log(ci, a, day, 'PRESENT' if day == D1 else 'ABSENT')  # 1 of 3 = 33.33
+            log(ci, b, day)                                        # 3 of 3
+            log(ci, c, day, 'ABSENT' if day == D3 else 'PRESENT')  # 2 of 3 = 66.67 -> 66.6
+        # average (33.33 + 100 + 66.67) / 3 = 66.67 -> 66.6
+
+        teacher_client = client_for(teacher.user)
+        course = teacher_client.get(f'/api/teacher/{teacher.id}/courses/').data['current'][0]
+        self.assertEqual(course['average_percent'], 66.6)
+        rows = teacher_client.get(f'/api/teacher/course-info/{ci.id}/').data['students']
+        self.assertEqual({r['student_id']: r['percent'] for r in rows}, {2302001: 33.3, 2302002: 100.0, 2302003: 66.6})
+        student = teacher_client.get(f'/api/teacher/course-info/{ci.id}/students/{c.id}/').data['student']
+        self.assertEqual(student['percent'], 66.6)
+        [semester] = client_for(c.user).get(f'/api/student/{c.id}/semesters/').data['semesters']
+        course = semester['courses'][0]
+        self.assertEqual((semester['overall_percent'], course['percent'], course['percentage']), (66.6, 66.6, 66.66))
+        self.assertEqual(client_for(c.user).get(f'/api/student/course-info/{ci.id}/').data['percent'], 66.6)
+        self.assertEqual(admin.get('/api/admin/overview/').data['semesters'][0]['average_percent'], 66.6)
+        self.assertEqual(admin.get('/api/admin/course-info/').data['course_infos'][0]['average_percent'], 66.6)

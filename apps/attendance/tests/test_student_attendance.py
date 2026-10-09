@@ -3,13 +3,15 @@ import datetime
 import importlib
 
 from django.apps import apps
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 
 from apps.academic.models import Classroom, StudentClassroom
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.records import classes_needed
 from apps.attendance.tests.helpers import (
-    client_for, make_course_info, make_semester, make_student, make_teacher,
+    check_in, client_for, expire_session, make_course_info, make_semester, make_student, make_teacher,
+    start_session,
 )
 
 D = [datetime.date(2026, 9, d) for d in range(1, 6)]
@@ -98,17 +100,20 @@ class StudentCourseDetailTests(StudentTestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data['course'], {
             'course_info_id': str(self.ci.id), 'code': 'CSE301', 'title': 'Course CSE301', 'credits': 'CREDIT_3_00',
-            'teacher_name': 'Tariq Islam', 'semester': {'label': 'Level 3 · Term I · 2025-26', 'is_active': True},
+            'teacher_name': 'Tariq Islam',
+            'semester': {'label': 'Level 3 · Term I · 2025-26', 'is_active': True,
+                         'start_date': None, 'end_date': None},
         })
         self.assertEqual({k: res.data[k] for k in ('attended', 'held', 'percent', 'classes_needed')},
                          {'attended': 1, 'held': 3, 'percent': 33.3, 'classes_needed': 5})
         self.assertEqual((res.data['joined_at'], res.data['left_at']), ('2026-09-03', None))
         self.assertEqual(res.data['days'], [
-            {'date': '2026-09-05', 'status': 'ABSENT', 'method': None, 'changed': False},
-            {'date': '2026-09-04', 'status': 'ABSENT', 'method': None, 'changed': True},
-            {'date': '2026-09-03', 'status': 'PRESENT', 'method': 'QR', 'changed': False},
-            {'date': '2026-09-02', 'status': None, 'method': None, 'changed': False},
-            {'date': '2026-09-01', 'status': None, 'method': None, 'changed': False},
+            {'date': '2026-09-05', 'status': 'ABSENT', 'method': None, 'changed': False,
+             'absent_reason': 'not_checked_in'},  # a class date without a log for them
+            {'date': '2026-09-04', 'status': 'ABSENT', 'method': None, 'changed': True, 'absent_reason': 'changed'},
+            {'date': '2026-09-03', 'status': 'PRESENT', 'method': 'QR', 'changed': False, 'absent_reason': None},
+            {'date': '2026-09-02', 'status': None, 'method': None, 'changed': False, 'absent_reason': None},
+            {'date': '2026-09-01', 'status': None, 'method': None, 'changed': False, 'absent_reason': None},
         ])
 
     def test_not_theirs(self):
@@ -130,6 +135,83 @@ class StudentCourseDetailTests(StudentTestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual((res.data['joined_at'], res.data['left_at'], res.data['held']), ('2026-09-06', None, 0))
         self.assertEqual({d['status'] for d in res.data['days']}, {None})  # every class was before they joined
+
+
+class AbsentReasonTests(TestCase):
+    """GET /student/course-info/<id>/: why each absent day is absent (absent_reason)."""
+
+    def setUp(self):
+        self.teacher = make_teacher('t@example.com', first_name='Tariq', last_name='Islam')
+        self.student = make_student('s@example.com', 2302001)
+        self.ci = make_course_info(self.teacher, students=[self.student])
+        self.teacher_client = client_for(self.teacher.user)
+
+    def session(self, day, mode):
+        return AttendanceSession.objects.create(course_info=self.ci, date=day, mode=mode, is_active=False)
+
+    def add_log(self, day, status, source, method='', session=None, time=None):
+        return AttendanceLog.objects.create(course_info=self.ci, student=self.student, date=day, status=status,
+                                            source=source, method=method, session=session, time=time)
+
+    def correct(self, day, status):
+        res = self.teacher_client.put(f'/api/teacher/course-info/{self.ci.id}/attendance/', {
+            'date': day.isoformat(), 'profile_id': str(self.student.id), 'status': status,
+        }, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_each_kind_of_absent_day(self):
+        days = [datetime.date(2026, 9, d) for d in range(1, 8)]
+        self.add_log(days[0], 'ABSENT', 'MANUAL', 'TEACHER')                                     # roll call
+        self.add_log(days[1], 'ABSENT', 'QR_ONLINE', session=self.session(days[1], 'QR_ONLINE'))  # live session
+        self.add_log(days[2], 'ABSENT', 'FACE', session=self.session(days[2], 'FACE'))            # class photo
+        self.add_log(days[3], 'PRESENT', 'QR_ONLINE', 'QR', session=self.session(days[3], 'QR_ONLINE'))
+        self.correct(days[3], 'ABSENT')  # checked in by QR, then the teacher changed it
+        # Two sessions: not in the class photo (09:00), checked in by QR (10:00), then changed to absent
+        self.add_log(days[4], 'ABSENT', 'FACE', session=self.session(days[4], 'FACE'), time=datetime.time(9))
+        self.add_log(days[4], 'PRESENT', 'QR_ONLINE', 'QR', session=self.session(days[4], 'QR_ONLINE'),
+                     time=datetime.time(10))
+        self.correct(days[4], 'ABSENT')
+        self.add_log(days[5], 'PRESENT', 'MANUAL', 'TEACHER')
+        # days[6]: a class with a log for someone else only
+        other = make_student('o@example.com', 2302002)
+        StudentClassroom.objects.create(student=other, classroom=self.ci.classroom)
+        AttendanceLog.objects.create(course_info=self.ci, student=other, date=days[6], status='PRESENT')
+
+        res = client_for(self.student.user).get(f'/api/student/course-info/{self.ci.id}/')
+        self.assertEqual({d['date']: (d['status'], d['absent_reason'], d['changed']) for d in res.data['days']}, {
+            '2026-09-07': ('ABSENT', 'not_checked_in', False),
+            '2026-09-06': ('PRESENT', None, False),
+            '2026-09-05': ('ABSENT', 'changed', True),
+            '2026-09-04': ('ABSENT', 'changed', True),
+            '2026-09-03': ('ABSENT', 'class_photo', False),
+            '2026-09-02': ('ABSENT', 'not_checked_in', False),
+            '2026-09-01': ('ABSENT', 'roll_call', False),
+        })
+        # The teacher's pages show that correction for the two-session day too
+        history = self.teacher_client.get(f'/api/sessions/course-info/{self.ci.id}/history/?date=2026-09-05')
+        self.assertEqual(history.data['history'][0]['logs'][0]['changed_by'], 'Tariq Islam')
+        teacher_days = self.teacher_client.get(f'/api/teacher/course-info/{self.ci.id}/students/{self.student.id}/')
+        self.assertNotIn('absent_reason', teacher_days.data['days'][0])  # only the student's page has it
+
+
+class SummarySavesEndedSessionsTests(TestCase):
+    def test_a_session_past_its_timer_is_counted(self):
+        cache.clear()
+        teacher = make_teacher('t@example.com')
+        came = make_student('s@example.com', 2302001)
+        missed = make_student('m@example.com', 2302002)
+        ci = make_course_info(teacher, students=[came, missed])
+        session_id = start_session(client_for(teacher.user), ci).data['session']['id']
+        self.assertEqual(check_in(came, session_id).status_code, 200)
+        expire_session(session_id)  # nobody stopped it and no teacher screen saved it
+
+        [semester] = client_for(missed.user).get(f'/api/student/{missed.id}/semesters/').data['semesters']
+        course = semester['courses'][0]
+        self.assertEqual((course['held'], course['attended'], course['percent'], course['below_min']),
+                         (1, 0, 0.0, True))
+        self.assertFalse(AttendanceSession.objects.get(id=session_id).is_active)
+        [semester] = client_for(came.user).get(f'/api/student/{came.id}/semesters/').data['semesters']
+        self.assertEqual((semester['courses'][0]['attended'], semester['overall_percent']), (1, 100.0))
 
 
 class FillMethodMigrationTests(TestCase):

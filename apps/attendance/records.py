@@ -58,10 +58,22 @@ def classes_needed(attended, held, minimum=None):
 
 
 def day_status(logs):
-    """(status, deciding log) for one student's logs on one date (logs not empty)."""
-    ordered = sorted(logs, key=lambda log: (log.status != PRESENT, log.time is None, log.time or 0))
-    deciding = ordered[0]
-    return (PRESENT if deciding.status == PRESENT else ABSENT), deciding
+    """
+    (status, deciding log) for one student's logs on one date (logs not empty). Present if
+    any log says so: the first present log decides. Absent: the log a teacher changed last
+    decides (a correction changes only the logs with another status, so on a day with several
+    sessions the others stay unchanged), else the first log.
+    """
+    def first(candidates):
+        return min(candidates, key=lambda log: (log.time is None, log.time or 0))
+
+    present = [log for log in logs if log.status == PRESENT]
+    if present:
+        return PRESENT, first(present)
+    changed = [log for log in logs if log.changed_at is not None]
+    if changed:
+        return ABSENT, max(changed, key=lambda log: log.changed_at)
+    return ABSENT, first(logs)
 
 
 def shown_method(log):
@@ -87,6 +99,24 @@ def log_details(log) -> dict:
     }
 
 
+def absent_reason(log):
+    """
+    Why an absent day is absent (section 7), from the log that decides it: "changed" (a
+    teacher corrected it to absent), "roll_call" (marked absent in a roll call), "class_photo"
+    (absent in a class photo session) or "not_checked_in" (absent in a live session; also a
+    class date inside the membership without a log for them).
+    """
+    if log is None:
+        return 'not_checked_in'
+    if log.changed_at is not None or log.changed_by_id is not None:
+        return 'changed'
+    if log.source == AttendanceLog.Source.FACE:
+        return 'class_photo'
+    if log.method == AttendanceLog.Method.TEACHER or log.source == AttendanceLog.Source.MANUAL:
+        return 'roll_call'
+    return 'not_checked_in'
+
+
 def class_dates(course_info_ids) -> dict:
     """{course info id: [its class dates, newest first]}."""
     dates = defaultdict(set)
@@ -107,20 +137,24 @@ def logs_by_day(course_info_ids, student) -> dict:
     return result
 
 
-def student_days(dates, membership, day_logs) -> list:
+def student_days(dates, membership, day_logs, reasons=False) -> list:
     """
     One row per class date (`dates`, newest first): {date, status, method, changed_by,
     changed_at}; status null outside the membership (and on the join day without a log);
-    `day_logs` = {date: [logs]}.
+    `day_logs` = {date: [logs]}. With `reasons`, rows also have `absent_reason` (null unless
+    the day is absent).
     """
     rows = []
     for day in dates:
         logs = day_logs.get(day)
         if not membership.counts_on(day, bool(logs)):
-            rows.append({'date': iso_date(day), 'status': None, **log_details(None)})
-            continue
-        status, deciding = day_status(logs) if logs else (ABSENT, None)
-        rows.append({'date': iso_date(day), 'status': status, **log_details(deciding)})
+            status, deciding = None, None
+        else:
+            status, deciding = day_status(logs) if logs else (ABSENT, None)
+        row = {'date': iso_date(day), 'status': status, **log_details(deciding)}
+        if reasons:
+            row['absent_reason'] = absent_reason(deciding) if status == ABSENT else None
+        rows.append(row)
     return rows
 
 
@@ -130,10 +164,11 @@ def count_days(days):
     return sum(d['status'] == PRESENT for d in held), len(held)
 
 
-def course_days(course_info, membership) -> list:
+def course_days(course_info, membership, reasons=False) -> list:
     """The student's day rows for one course (newest first)."""
     dates = class_dates([course_info.id]).get(course_info.id, [])
-    return student_days(dates, membership, logs_by_day([course_info.id], membership.student)[course_info.id])
+    day_logs = logs_by_day([course_info.id], membership.student)[course_info.id]
+    return student_days(dates, membership, day_logs, reasons=reasons)
 
 
 # ── Student dashboard (section 7) ─────────────────────────────────────────────
@@ -194,10 +229,10 @@ def get_student_attendance_summary(student_profile):
                 'percent': percent(attended, held),
                 'below_min': below_min(attended, held),
                 'classes_needed': classes_needed(attended, held),
-                # Older keys (same numbers)
+                # Older keys (same numbers; two decimals, also rounded down)
                 'totalClasses': held,
                 'presentCount': attended,
-                'percentage': round(attended / held * 100, 2) if held else 0.0,
+                'percentage': attended * 10000 // held / 100 if held else 0.0,
                 'history': [
                     {'date': d['date'], 'present': d['status'] == PRESENT}
                     for d in reversed(days) if d['status'] is not None
@@ -225,7 +260,7 @@ def get_student_attendance_summary(student_profile):
 
 def student_course_detail(course_info, membership) -> dict:
     """GET /student/course-info/<id>/ for the signed-in student (section 7)."""
-    days = course_days(course_info, membership)
+    days = course_days(course_info, membership, reasons=True)
     attended, held = count_days(days)
     teacher = course_info.teacher
     return {
@@ -245,7 +280,8 @@ def student_course_detail(course_info, membership) -> dict:
         'percent': percent(attended, held),
         'classes_needed': classes_needed(attended, held),
         'days': [
-            {'date': d['date'], 'status': d['status'], 'method': d['method'], 'changed': d['changed_at'] is not None}
+            {'date': d['date'], 'status': d['status'], 'method': d['method'], 'changed': d['changed_at'] is not None,
+             'absent_reason': d['absent_reason']}
             for d in days
         ],
     }

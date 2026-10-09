@@ -235,17 +235,39 @@ class CheckInTests(LiveTestCase):
         Semester.objects.filter(id=self.ci.semester_id).update(deleted=True)
         res = check_in(self.student_a, self.session_id)
         self.assertEqual((res.status_code, res.data['code']), (410, 'session_ended'))
+        # Their only semester is deleted: they are on no class list now
         res = check_in(self.student_a, code=current_code(self.session_id))
-        self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
+        self.assertEqual((res.status_code, res.data['code']), (403, 'not_enrolled'))
         self.assertEqual(redis_service.get_submissions(self.session_id), {})
 
     def test_student_not_in_class(self):
         outsider = make_student('c@example.com', 2302003)
         res = check_in(outsider, self.session_id)
         self.assertEqual((res.status_code, res.data['code']), (403, 'not_enrolled'))
-        # Typing another course's code finds nothing of theirs
+        # Typing the code without being on any class list: told why, not "wrong code"
         res = check_in(outsider, code=current_code(self.session_id))
+        self.assertEqual((res.status_code, res.data['code']), (403, 'not_enrolled'))
+        self.assertEqual(res.data['message'], 'You are not on a class list yet. Ask the department office to add you.')
+        self.assertEqual(check_in(outsider, code='12ab').data['code'], 'not_enrolled')
+
+    def test_typed_code_of_another_class_while_on_a_class_list(self):
+        # On another active semester's class list: the code is simply not one of theirs
+        other = make_student('c@example.com', 2302003)
+        make_course_info(self.teacher, 'CSE401', students=[other])
+        res = check_in(other, code=current_code(self.session_id))
         self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
+        self.assertEqual(redis_service.get_submissions(self.session_id), {})
+
+    def test_typed_code_after_leaving_or_when_only_in_a_finished_semester(self):
+        StudentClassroom.objects.filter(student=self.student_b).update(left_at='2026-01-01')
+        res = check_in(self.student_b, code=current_code(self.session_id))
+        self.assertEqual((res.status_code, res.data['code']), (403, 'not_enrolled'))
+        # Still a member (left_at null) of a semester that is finished: not a current class list
+        finished = make_student('f@example.com', 2302004)
+        make_course_info(self.teacher, 'CSE201', students=[finished])
+        Semester.objects.filter(classrooms__memberships__student=finished).update(is_active=False)
+        res = check_in(finished, code=current_code(self.session_id))
+        self.assertEqual((res.status_code, res.data['code']), (403, 'not_enrolled'))
 
     def test_former_member_cannot_check_in(self):
         StudentClassroom.objects.filter(student=self.student_b).update(left_at='2026-01-01')

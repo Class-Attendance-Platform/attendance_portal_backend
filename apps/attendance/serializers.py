@@ -45,5 +45,15 @@ class CorrectionSerializer(serializers.Serializer):
 class RollCallSerializer(serializers.Serializer):
     date               = serializers.DateField()
     present_profile_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=True)
+    # Optional: with it, students in neither list are left as they are (no mark = no log);
+    # without it (older apps), every other enrolled student is absent.
+    absent_profile_ids = serializers.ListField(child=serializers.UUIDField(), required=False, allow_empty=True)
     # The `version` of the roll call list the page showed (GET .../roll-call/?date=); optional
     version            = serializers.CharField(required=False, allow_blank=False, max_length=64)
+
+    def validate(self, data):
+        if set(data.get('absent_profile_ids') or ()) & set(data['present_profile_ids']):
+            raise serializers.ValidationError(
+                {'absent_profile_ids': ['A student cannot be both present and absent.']},
+            )
+        return data

@@ -39,6 +39,7 @@ FIELD_LABELS = {
     'profile_id': 'Student',
     'profile_ids': 'Students',
     'present_profile_ids': 'Present students',
+    'absent_profile_ids': 'Absent students',
     'session_id': 'Session',
     'device_id': 'Device ID',
     'duration_minutes': 'Length',

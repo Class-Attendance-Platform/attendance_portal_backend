@@ -54,7 +54,7 @@ class BackfillJoinDatesTests(TestCase):
         self.assertIn("Students who joined after their semester's first class: 2", out)
         self.assertIn(
             '2302002 Lata Das · Level 3 · Term I · 2025-26 (Main): joined_at 2026-09-02; '
-            'classes held 4 -> 3, attended 2, 50.0% -> 66.7%', out,
+            'classes held 4 -> 3, attended 2, 50.0% -> 66.6%', out,  # rounded down
         )
         self.assertIn('2302003 Student 2302003 · Level 3 · Term I · 2025-26 (Main): joined_at 2026-09-03; '
                       'classes held 4 -> 0, attended 0, 0.0% -> -', out)

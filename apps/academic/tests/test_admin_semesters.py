@@ -529,6 +529,141 @@ class MainClassroomMigrationTests(TestCase):
         self.assertEqual(Classroom.objects.filter(semester=has_one).count(), 1)
 
 
+class OneCurrentSemesterTests(AdminTestCase):
+    """A student may be a current member of one active semester only (409 already_in_semester)."""
+
+    def setUp(self):
+        super().setUp()
+        self.a = make_student('a@example.com', 2302001, first_name='Ayesha', last_name='Rahman')
+        self.b = make_student('b@example.com', 2302002, first_name='Tanvir', last_name='Hasan')
+        self.c = make_student('c@example.com', 2302003)
+        self.current = make_semester('Third', 'I', '2025-26', students=[self.a, self.b])
+        self.other = make_semester('Second', 'I', '2025-26')
+
+    def add(self, semester, *students):
+        return self.admin.post(f'/api/admin/semesters/{semester.id}/students/',
+                               {'profile_ids': [str(s.id) for s in students]}, format='json')
+
+    def members(self, semester):
+        return set(StudentClassroom.objects.filter(classroom__semester=semester).values_list('student_id', flat=True))
+
+    def test_adding_a_current_member_of_another_active_semester_is_refused(self):
+        res = self.add(self.other, self.a, self.c)
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_in_semester'))
+        self.assertEqual(res.data['message'], 'Ayesha Rahman (2302001) is already in Level 3 · Term I · 2025-26. '
+                                              'Remove them from that semester first.')
+        self.assertEqual(res.data['students'], [{
+            'profile_id': str(self.a.id), 'student_id': 2302001, 'name': 'Ayesha Rahman',
+            'semester_id': str(self.current.id), 'semester_label': 'Level 3 · Term I · 2025-26',
+        }])
+        self.assertEqual(self.members(self.other), set())  # nothing added, not even c
+
+        res = self.add(self.other, self.c, self.b, self.a)
+        self.assertEqual(res.data['message'], '2 students are already in another semester: Ayesha Rahman (2302001), '
+                                              'Tanvir Hasan (2302002). Remove them there first.')
+        self.assertEqual([s['student_id'] for s in res.data['students']], [2302001, 2302002])
+
+    def test_a_long_list_is_shortened_in_the_message(self):
+        many = [make_student(f's{i}@example.com', 2302100 + i) for i in range(7)]
+        StudentClassroom.objects.bulk_create([
+            StudentClassroom(student=s, classroom=Classroom.objects.get(semester=self.current)) for s in many
+        ])
+        res = self.add(self.other, *many)
+        self.assertEqual(res.status_code, 409)
+        self.assertTrue(res.data['message'].startswith('7 students are already in another semester: '
+                                                       'Student 2302100 (2302100), '), res.data['message'])
+        self.assertTrue(res.data['message'].endswith(' and 2 more. Remove them there first.'), res.data['message'])
+        self.assertEqual(len(res.data['students']), 7)
+
+    def test_former_members_finished_semesters_and_the_same_semester_do_not_block(self):
+        self.assertEqual(self.admin.post(f'/api/admin/semesters/{self.current.id}/students/remove/',
+                                         {'profile_ids': [str(self.a.id)]}, format='json').status_code, 200)
+        self.assertEqual(self.add(self.other, self.a).status_code, 200)    # left the other one
+        self.assertEqual(self.add(self.current, self.b).data['already_in'], 1)  # already here: no clash
+        Semester.objects.filter(pk=self.current.pk).update(is_active=False)
+        self.assertEqual(self.add(self.other, self.b).status_code, 200)    # finished: not current any more
+
+    def test_promote_still_moves_them(self):
+        res = self.admin.post(f'/api/admin/semesters/{self.current.id}/promote/',
+                              {'target': {'level': 'Third', 'semester': 'II', 'session': '2025-26'}}, format='json')
+        self.assertEqual((res.status_code, res.data['moved']), (200, 2))
+        current = StudentClassroom.objects.current().filter(student=self.a, classroom__semester__is_active=True)
+        self.assertEqual([str(m.classroom.semester_id) for m in current], [res.data['target_semester_id']])
+
+    def test_promote_is_refused_for_a_student_in_a_third_active_semester(self):
+        # An older state: a is also a current member of `other`
+        StudentClassroom.objects.create(student=self.a, classroom=Classroom.objects.get(semester=self.other))
+        res = self.admin.post(f'/api/admin/semesters/{self.current.id}/promote/',
+                              {'target': {'level': 'Third', 'semester': 'II', 'session': '2025-26'}}, format='json')
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_in_semester'))
+        self.assertEqual(res.data['students'][0]['semester_id'], str(self.other.id))
+        self.current.refresh_from_db()
+        self.assertTrue(self.current.is_active)  # nothing changed: no new semester, nobody moved
+        self.assertFalse(Semester.objects.filter(level='Third', semester='II').exists())
+        self.assertFalse(StudentClassroom.objects.filter(left_at__isnull=False).exists())
+
+    def test_reopening_is_refused_while_its_members_are_in_another_active_semester(self):
+        url = f'/api/admin/semesters/{self.current.id}/'
+        self.assertEqual(self.admin.post(f'{url}finish/').status_code, 200)  # members stay (no promote)
+        self.assertEqual(self.add(self.other, self.a).status_code, 200)
+
+        res = self.admin.post(f'{url}reopen/')
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_in_semester'))
+        self.assertEqual(res.data['message'], 'Ayesha Rahman (2302001) is now in Level 2 · Term I · 2025-26. '
+                                              'Remove them from this semester before reopening it.')
+        self.current.refresh_from_db()
+        self.assertFalse(self.current.is_active)
+
+        self.admin.post(f'{url}students/remove/', {'profile_ids': [str(self.a.id)]}, format='json')
+        res = self.admin.post(f'{url}reopen/')
+        self.assertEqual((res.status_code, res.data['semester']['is_active']), (200, True))
+
+    def test_reopening_counts_deleted_accounts_too(self):
+        # Restoring the account later would otherwise make two current semesters
+        Semester.objects.filter(pk=self.current.pk).update(is_active=False)
+        StudentClassroom.objects.create(student=self.b, classroom=Classroom.objects.get(semester=self.other))
+        self.b.user.deleted = True
+        self.b.user.save()
+        res = self.admin.post(f'/api/admin/semesters/{self.current.id}/reopen/')
+        self.assertEqual((res.status_code, [s['student_id'] for s in res.data['students']]), (409, [2302002]))
+
+    def test_the_older_classroom_endpoint_follows_the_rule(self):
+        classroom = Classroom.objects.get(semester=self.other)
+        res = self.admin.post(f'/api/admin/classrooms/{classroom.id}/students/',
+                              {'student_ids': [str(self.a.id), str(self.c.id)]}, format='json')
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_in_semester'))
+        self.assertEqual(self.members(self.other), set())
+        res = self.admin.post(f'/api/admin/classrooms/{classroom.id}/students/',
+                              {'student_ids': [str(self.c.id)]}, format='json')
+        self.assertEqual((res.status_code, res.data['added']), (200, [str(self.c.id)]))
+
+    def test_moving_an_older_class_group_to_another_semester_follows_the_rule(self):
+        old = make_semester('First', 'I', '2024-25', students=[self.c], is_active=False)  # c is still a member
+        self.assertEqual(self.add(self.other, self.c).status_code, 200)  # the old one is finished: allowed
+        classroom = Classroom.objects.get(semester=old)
+        url = f'/api/admin/classrooms/{classroom.id}/'
+        target = make_semester('Fourth', 'I', '2025-26')
+        res = self.admin.put(url, {'name': 'Main', 'semester': str(target.id)}, format='json')
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_in_semester'))
+        self.assertEqual(Classroom.objects.get(id=classroom.id).semester_id, old.id)  # not moved
+        res = self.admin.put(url, {'name': 'Old group', 'semester': str(old.id)}, format='json')
+        self.assertEqual(res.status_code, 200)  # renaming in place is fine
+
+    def test_importing_into_a_semester_only_adds_new_accounts(self):
+        # Students already in the portal are skipped ("exists"), so the import cannot make two
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        content = ('student_id,name,email,level,term\n'
+                   '2302001,Ayesha Rahman,a@example.com,Third,I\n'
+                   '2302050,New Student,new@example.com,Second,I\n').encode()
+        res = self.admin.post('/api/admin/students/import/', {
+            'file': SimpleUploadedFile('students.csv', content, content_type='text/csv'),
+            'apply': 'true', 'semester_id': str(self.other.id),
+        }, format='multipart')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['summary'], {'create': 1, 'exists': 1, 'error': 0})
+        self.assertEqual(self.members(self.other), {StudentProfile.objects.get(student_id=2302050).id})
+
+
 class StudentProfileUnchangedByRosterTests(AdminTestCase):
     def test_adding_does_not_change_level(self):
         student = make_student('a@example.com', 2302001)
