@@ -10,7 +10,8 @@ They all read one `Report` (build_report):
   only the class dates inside it (apps/academic/stats.py)
 - times are local (Asia/Dhaka)
 The PDF and DOCX split the date grid into pages that each repeat #, student ID, name and the
-totals, so ID, name and % are always visible. The CSV stays a plain table (one header row).
+totals, so ID, name and % are always visible. The CSV stays a plain table (one header row;
+UTF-8 with a byte order mark). Percentages have one decimal, rounded down (stats.round_percent).
 """
 import csv
 import io
@@ -192,8 +193,11 @@ def build_report(course_info, filter_date=None) -> Report:
 
 def export_csv(course_info, filter_date=None):
     report = build_report(course_info, filter_date)
-    response = HttpResponse(content_type='text/csv')
+    response = HttpResponse(content_type='text/csv; charset=utf-8')
     response['Content-Disposition'] = f'attachment; filename="{_filename(course_info, filter_date, "csv")}"'
+    # UTF-8 byte order mark: Excel on Windows otherwise reads the file in the local code page
+    # and garbles names with letters outside English (other programs skip it).
+    response.write('\ufeff')
 
     writer = csv.writer(response)
     header = ['Student ID', 'Name', 'Email']

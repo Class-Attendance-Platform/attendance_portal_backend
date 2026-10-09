@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from apps.academic.models import StudentClassroom
+from apps.academic.models import Semester, StudentClassroom
 from apps.attendance.models import AttendanceChange, AttendanceLog, AttendanceSession
 from apps.attendance.tests.helpers import (
     client_for, make_admin, make_course_info, make_semester, make_student, make_teacher, start_session,
@@ -63,7 +63,8 @@ class CourseListTests(TeacherTestCase):
         self.assertEqual(course, {
             'course_info_id': str(self.ci.id), 'code': 'CSE301', 'title': 'Course CSE301',
             'credits': 'CREDIT_3_00',
-            'semester': {'id': str(self.semester.id), 'label': 'Level 3 · Term I · 2025-26', 'is_active': True},
+            'semester': {'id': str(self.semester.id), 'label': 'Level 3 · Term I · 2025-26', 'is_active': True,
+                         'start_date': None, 'end_date': None},
             'student_count': 3, 'classes_held': 4,
             # a 3/4 = 75, b 0/4 = 0, late 2/2 = 100 -> mean 58.3; b is below 75
             'average_percent': 58.3, 'below_min_count': 1, 'face_registered_count': 1,
@@ -374,6 +375,118 @@ class RollCallListTests(TeacherTestCase):
             'date': D4.isoformat(), 'profile_id': str(self.b.id), 'status': 'PRESENT',
         }, format='json')
         self.assertEqual((res.status_code, res.data['changed']), (200, True))
+
+
+class RollCallDateLimitTests(TeacherTestCase):
+    """Roll call dates must be in the course's semester: from its start date; until its end date once finished."""
+
+    def set_dates(self, start=None, end=None, active=True):
+        Semester.objects.filter(pk=self.semester.pk).update(start_date=start, end_date=end, is_active=active)
+
+    def roll_list(self, day):
+        return self.client.get(self.url(f'roll-call/?date={day.isoformat()}'))
+
+    def save(self, day, present):
+        return self.client.post(self.url('roll-call/'), {
+            'date': day.isoformat(), 'present_profile_ids': [str(s.id) for s in present],
+        }, format='json')
+
+    def test_not_before_the_start_date(self):
+        self.set_dates(start=D2)
+        for res in (self.roll_list(D1), self.save(D1, [self.a, self.b])):
+            self.assertEqual((res.status_code, res.data['code']), (400, 'outside_semester'))
+            self.assertEqual(res.data['message'], "Pick a date in this course's semester (from 02 Sep 2026).")
+        self.assertEqual(dict(AttendanceLog.objects.filter(date=D1).values_list('student__student_id', 'status')),
+                         {2302001: 'PRESENT', 2302002: 'ABSENT'})  # nothing saved
+        res = self.save(datetime.date(2019, 1, 1), [])
+        self.assertEqual(res.data['code'], 'outside_semester')
+        self.assertEqual(self.roll_list(D2).status_code, 200)
+        # A correction needs an existing class: still possible
+        res = self.client.put(self.url('attendance/'), {
+            'date': D1.isoformat(), 'profile_id': str(self.b.id), 'status': 'PRESENT',
+        }, format='json')
+        self.assertEqual((res.status_code, res.data['changed']), (200, True))
+
+    def test_after_the_end_date_only_once_finished(self):
+        self.set_dates(start=D1, end=D3)
+        self.assertEqual(self.roll_list(D4).status_code, 200)  # still active: a make-up class is fine
+        self.set_dates(start=D1, end=D3, active=False)
+        res = self.roll_list(D4)
+        self.assertEqual((res.status_code, res.data['code']), (400, 'outside_semester'))
+        self.assertEqual(res.data['message'], "Pick a date in this course's semester (01 Sep 2026 to 03 Sep 2026).")
+        self.assertEqual(self.save(D4, [self.a]).data['code'], 'outside_semester')
+        self.assertEqual(self.save(D3, [self.a]).status_code, 200)  # finished semesters keep roll call
+        self.set_dates(end=D3, active=False)
+        self.assertEqual(self.roll_list(D4).data['message'],
+                         "Pick a date in this course's semester (until 03 Sep 2026).")
+
+    def test_without_dates_any_past_date_works(self):
+        self.assertEqual(self.roll_list(datetime.date(2019, 1, 1)).status_code, 200)
+
+    def test_courses_carry_the_semester_dates(self):
+        self.set_dates(start=D1, end=D4)
+        semester = self.client.get(self.url()).data['course']['semester']
+        self.assertEqual((semester['start_date'], semester['end_date']), ('2026-09-01', '2026-09-04'))
+        listed = self.client.get(f'/api/teacher/{self.teacher.id}/courses/').data['current'][0]['semester']
+        self.assertEqual(listed['start_date'], '2026-09-01')
+        student = client_for(self.a.user).get(f'/api/student/course-info/{self.ci.id}/').data['course']['semester']
+        self.assertEqual((student['start_date'], student['end_date']), ('2026-09-01', '2026-09-04'))
+
+
+class RollCallUnmarkedTests(TeacherTestCase):
+    """POST with absent_profile_ids: only the students marked change; the others stay as they are."""
+
+    def save(self, day, present=(), absent=()):
+        return self.client.post(self.url('roll-call/'), {
+            'date': day.isoformat(), 'present_profile_ids': [str(s.id) for s in present],
+            'absent_profile_ids': [str(s.id) for s in absent],
+        }, format='json')
+
+    @staticmethod
+    def counts(res):
+        return {k: res.data[k] for k in ('present', 'absent', 'unmarked', 'changed')}
+
+    def test_students_without_a_mark_are_left_alone(self):
+        AttendanceLog.objects.filter(student=self.late, date=D4).delete()  # no mark for late on D4
+        res = self.save(D4, present=[self.b])
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(self.counts(res), {'present': 2, 'absent': 0, 'unmarked': 1, 'changed': 1})
+        self.assertFalse(AttendanceLog.objects.filter(student=self.late, date=D4).exists())  # no log made
+        a_log = AttendanceLog.objects.get(student=self.a, date=D4)
+        self.assertEqual((a_log.status, a_log.changed_at), ('PRESENT', None))  # not marked: untouched
+        self.assertEqual(AttendanceLog.objects.get(student=self.b, date=D4).status, 'PRESENT')
+
+    def test_a_new_date_and_marking_the_rest_later(self):
+        day = datetime.date(2026, 9, 7)
+        res = self.save(day, present=[self.a], absent=[self.b])
+        self.assertEqual(self.counts(res), {'present': 1, 'absent': 1, 'unmarked': 1, 'changed': 0})
+        self.assertEqual(dict(AttendanceLog.objects.filter(date=day).values_list('student__student_id', 'status')),
+                         {2302001: 'PRESENT', 2302002: 'ABSENT'})
+        res = self.save(day, absent=[self.late])
+        self.assertEqual(self.counts(res), {'present': 1, 'absent': 2, 'unmarked': 0, 'changed': 0})
+        self.assertEqual(AttendanceLog.objects.filter(date=day).count(), 3)
+
+    def test_marking_a_present_student_absent_is_recorded_like_a_correction(self):
+        res = self.save(D4, absent=[self.a])
+        self.assertEqual(self.counts(res), {'present': 1, 'absent': 2, 'unmarked': 0, 'changed': 1})
+        log = AttendanceLog.objects.get(student=self.a, date=D4)
+        self.assertEqual((log.status, log.method, log.changed_by_id), ('ABSENT', 'TEACHER', self.teacher.user.id))
+        change = AttendanceChange.objects.get()
+        self.assertEqual((change.old_status, change.new_status), ('PRESENT', 'ABSENT'))
+
+    def test_a_student_cannot_be_both(self):
+        res = self.save(D4, present=[self.a], absent=[self.a])
+        self.assertEqual((res.status_code, res.data['message']), (400, 'A student cannot be both present and absent.'))
+        self.assertIn('absent_profile_ids', res.data['errors'])
+        self.assertFalse(AttendanceChange.objects.exists())
+
+    def test_without_the_list_everyone_else_is_absent_as_before(self):
+        AttendanceLog.objects.filter(student=self.late, date=D4).delete()
+        res = self.client.post(self.url('roll-call/'), {
+            'date': D4.isoformat(), 'present_profile_ids': [str(self.a.id)],
+        }, format='json')
+        self.assertEqual(self.counts(res), {'present': 1, 'absent': 2, 'unmarked': 0, 'changed': 0})
+        self.assertEqual(AttendanceLog.objects.get(student=self.late, date=D4).status, 'ABSENT')
 
 
 class DeleteDateTests(TeacherTestCase):

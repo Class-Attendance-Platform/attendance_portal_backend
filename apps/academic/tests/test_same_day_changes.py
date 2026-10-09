@@ -85,7 +85,7 @@ class SameDayTestCase(TestCase):
     def csv_rows(self, ci):
         res = self.teacher_client.get(f'/api/reports/course-info/{ci.id}/export/?format=csv')
         self.assertEqual(res.status_code, 200)
-        rows = list(csv.reader(io.StringIO(res.content.decode())))
+        rows = list(csv.reader(io.StringIO(res.content.decode('utf-8-sig'))))
         header = rows[0]
         return {int(row[0]): dict(zip(header, row)) for row in rows[1:]}
 
@@ -185,3 +185,21 @@ class JoiningTests(SameDayTestCase):
         self.assertEqual(res.status_code, 200)
         row = self.teacher_rows(self.ci)[2302003]
         self.assertEqual((row['attended'], row['held']), (0, 1))  # the roll call listed them: absent
+
+    def test_a_roll_call_that_leaves_them_unmarked_does_not_count_for_them(self):
+        # The app sends absent_profile_ids: correcting someone else leaves the late joiner without a mark
+        self.class_today(self.ci, present=[self.a])
+        self.roster_post('', self.late)
+        listed = self.teacher_client.get(f'/api/teacher/course-info/{self.ci.id}/roll-call/?date={self.today}')
+        self.assertEqual({s['student_id']: s['status'] for s in listed.data['students']},
+                         {2302001: 'PRESENT', 2302002: 'ABSENT', 2302003: None})
+        res = self.teacher_client.post(f'/api/teacher/course-info/{self.ci.id}/roll-call/', {
+            'date': self.today.isoformat(), 'present_profile_ids': [str(self.a.id), str(self.b.id)],
+            'absent_profile_ids': [], 'version': listed.data['version'],
+        }, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual((res.data['present'], res.data['absent'], res.data['unmarked'], res.data['changed']),
+                         (2, 0, 1, 1))
+        self.assertFalse(AttendanceLog.objects.filter(student=self.late, date=self.today).exists())
+        row = self.teacher_rows(self.ci)[2302003]
+        self.assertEqual((row['attended'], row['held'], row['percent'], row['below_min']), (0, 0, None, False))

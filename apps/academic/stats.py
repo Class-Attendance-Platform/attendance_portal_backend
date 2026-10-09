@@ -8,8 +8,10 @@ members of an active semester; everyone who was in a finished one):
   the join day only if they have a log that day (StudentClassroom.counts_on: a class held
   before they were added does not count for them)
 - attended = those dates on which they were present
-- percent = attended / held * 100 (None when held = 0: never "low" without classes)
+- percent = attended / held * 100 (None when held = 0: never "low" without classes), one
+  decimal, rounded down (round_percent)
 """
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -20,7 +22,12 @@ from apps.attendance.models import AttendanceLog
 
 
 def round_percent(value):
-    return None if value is None else round(value, 1)
+    """
+    One decimal, rounded down (66.67 -> 66.6, 82.95 -> 82.9): a percent never reads higher
+    than it is (the app shows whole numbers, also rounded down). The tiny margin keeps an
+    exact tenth that floats store just below it (74.99999… for 75.0) at that tenth.
+    """
+    return None if value is None else math.floor(value * 10 + 1e-9) / 10
 
 
 @dataclass

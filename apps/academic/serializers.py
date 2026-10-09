@@ -36,7 +36,10 @@ def semester_row(semester, classroom=None, student_count=0, course_count=0) -> d
 
 
 def semester_brief(semester) -> dict:
-    return {'id': str(semester.id), 'label': semester.label, 'is_active': semester.is_active}
+    return {
+        'id': str(semester.id), 'label': semester.label, 'is_active': semester.is_active,
+        'start_date': iso_date(semester.start_date), 'end_date': iso_date(semester.end_date),
+    }
 
 
 def roster_row(membership) -> dict:

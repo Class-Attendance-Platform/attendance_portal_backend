@@ -42,6 +42,26 @@ def future_date_response():
     return error_response('You cannot take attendance for a future date.', status=400, code='future_date')
 
 
+def outside_semester_response(semester, day):
+    """
+    400 for a roll call date before the semester's start date, or after its end date once it
+    is finished (only the dates that are set); None when the date is fine.
+    """
+    start = semester.start_date
+    end = semester.end_date if not semester.is_active else None
+    if not ((start and day < start) or (end and day > end)):
+        return None
+    if start and end:
+        dates = f'{start:%d %b %Y} to {end:%d %b %Y}'
+    elif start:
+        dates = f'from {start:%d %b %Y}'
+    else:
+        dates = f'until {end:%d %b %Y}'
+    return error_response(
+        f"Pick a date in this course's semester ({dates}).", status=400, code='outside_semester',
+    )
+
+
 def course_rows(course_infos):
     """
     ({course info id: Course row}, numbers) for the teacher's lists: class list counts,
@@ -256,8 +276,8 @@ def session_running_response(session):
 class TeacherRollCallView(APIView):
     """
     GET ?date=: whom a roll call for that date covers (everyone enrolled that day, former members
-    too) with their status. POST {date, present_profile_ids, version?}: saves a roll call
-    (creates the class if missing).
+    too) with their status. POST {date, present_profile_ids, absent_profile_ids?, version?}:
+    saves a roll call (creates the class if missing). Dates outside the semester are refused.
     """
     permission_classes = [IsAdminOrTeacher]
 
@@ -270,6 +290,9 @@ class TeacherRollCallView(APIView):
             return validation_error_response({'date': ['Use a YYYY-MM-DD date.']})
         if day > timezone.localdate():
             return future_date_response()
+        outside = outside_semester_response(ci.semester, day)
+        if outside:
+            return outside
 
         finalize_expired_sessions(ci)
         session = live_session_on(ci, day)
@@ -304,13 +327,19 @@ class TeacherRollCallView(APIView):
         day = data['date']
         if day > timezone.localdate():
             return future_date_response()
+        outside = outside_semester_response(ci.semester, day)
+        if outside:
+            return outside
 
         finalize_expired_sessions(ci)
         session = live_session_on(ci, day)
         if session is not None:
             return session_running_response(session)
         try:
-            counts = roll_call(ci, day, data['present_profile_ids'], request.user, data.get('version'))
+            counts = roll_call(
+                ci, day, data['present_profile_ids'], request.user, data.get('version'),
+                absent_ids=data.get('absent_profile_ids'),
+            )
         except DateChanged:
             return error_response(
                 'This date changed since you opened it. Check the list and save again.',

@@ -411,6 +411,12 @@ class CheckInView(APIView):
             if CODE_PATTERN.match(code):
                 session = self.find_by_code(student, code)
             if session is None:
+                if not self.on_a_class_list(student):
+                    # No code can work for them: say why instead of "wrong or expired"
+                    return error_response(
+                        'You are not on a class list yet. Ask the department office to add you.',
+                        status=403, code='not_enrolled',
+                    )
                 return code_invalid_response()
 
         try:
@@ -452,6 +458,14 @@ class CheckInView(APIView):
             if codes.code_matches(session.qr_token, code) and can_join_live(student, session):
                 return session
         return None
+
+    @staticmethod
+    def on_a_class_list(student) -> bool:
+        """A current member of the class group of an active semester (as the admin's students list shows)."""
+        return StudentClassroom.objects.filter(
+            student=student, classroom__deleted=False,
+            classroom__semester__is_active=True, classroom__semester__deleted=False,
+        ).current().exists()
 
 
 def code_invalid_response():

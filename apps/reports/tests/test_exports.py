@@ -94,7 +94,8 @@ class ReportDataTests(ExportTestCase):
         self.assertEqual(sorted(rows), [2302001, 2302002])  # left and deleted accounts are not listed
         ayesha, tanvir = rows[2302001], rows[2302002]
         self.assertEqual(ayesha.cells, ['PRESENT', 'ABSENT', 'PRESENT'])
-        self.assertEqual((ayesha.held, ayesha.attended, ayesha.percent, ayesha.below_min), (3, 2, 66.7, True))
+        # 2 of 3: one decimal, rounded down
+        self.assertEqual((ayesha.held, ayesha.attended, ayesha.percent, ayesha.below_min), (3, 2, 66.6, True))
         self.assertEqual(tanvir.cells, ['', 'PRESENT', 'ABSENT'])  # not in the class on D1: blank
         self.assertEqual((tanvir.held, tanvir.attended, tanvir.percent), (2, 1, 50.0))
 
@@ -149,7 +150,7 @@ class ReportDataTests(ExportTestCase):
 class ExportEndpointTests(ExportTestCase):
     def test_format_parameter_names_the_file_type(self):
         for fmt, content_type in (
-            ('csv', 'text/csv'),
+            ('csv', 'text/csv; charset=utf-8'),
             ('pdf', 'application/pdf'),
             ('xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
             ('docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
@@ -202,17 +203,29 @@ class ExportEndpointTests(ExportTestCase):
         self.assertEqual(self.export('format=csv').status_code, 404)
 
     def test_csv(self):
-        rows = list(csv.reader(io.StringIO(self.export('format=csv').content.decode())))
+        rows = list(csv.reader(io.StringIO(self.export('format=csv').content.decode('utf-8-sig'))))
         self.assertEqual(rows[0], ['Student ID', 'Name', 'Email', '2026-09-01', '2026-09-08', '2026-09-15',
                                    'Classes held', 'Present', 'Percentage'])
         self.assertEqual(rows[1], ['2302001', 'Ayesha Rahman', 'a@example.com',
-                                   'PRESENT', 'ABSENT', 'PRESENT', '3', '2', '66.7%'])
+                                   'PRESENT', 'ABSENT', 'PRESENT', '3', '2', '66.6%'])
         self.assertEqual(rows[2], ['2302002', 'Tanvir Hasan', 't@example.com',
                                    '', 'PRESENT', 'ABSENT', '2', '1', '50.0%'])
         self.assertEqual(len(rows), 3)
 
+    def test_csv_is_utf8_with_a_byte_order_mark(self):
+        # Excel on Windows reads a CSV without the mark in the local code page ("NusrÃ¡t")
+        self.ayesha.user.first_name = 'Nusrát'
+        self.ayesha.user.last_name = 'D’Souza'
+        self.ayesha.user.save()
+        res = self.export('format=csv')
+        self.assertTrue(res.content.startswith(b'\xef\xbb\xbfStudent ID,'), res.content[:20])
+        self.assertEqual(res['Content-Type'], 'text/csv; charset=utf-8')
+        rows = list(csv.reader(io.StringIO(res.content.decode('utf-8-sig'))))
+        self.assertEqual(rows[1][1], 'Nusrát D’Souza')
+        self.assertTrue(self.export('format=csv&date=2026-09-01').content.startswith(b'\xef\xbb\xbf'))
+
     def test_csv_one_date(self):
-        rows = list(csv.reader(io.StringIO(self.export('format=csv&date=2026-09-01').content.decode())))
+        rows = list(csv.reader(io.StringIO(self.export('format=csv&date=2026-09-01').content.decode('utf-8-sig'))))
         self.assertEqual(rows, [['Student ID', 'Name', 'Email', 'Status'],
                                 ['2302001', 'Ayesha Rahman', 'a@example.com', 'PRESENT'],
                                 ['2302002', 'Tanvir Hasan', 't@example.com', '']])
@@ -231,7 +244,7 @@ class ExportEndpointTests(ExportTestCase):
         self.assertEqual(values[header_index][:8], ('#', 'Student ID', 'Name', 'Email',
                                                     '01 Sep 2026', '08 Sep 2026', '15 Sep 2026', 'Held'))
         ayesha, tanvir = values[header_index + 1], values[header_index + 2]
-        self.assertEqual(ayesha[1:10], (2302001, 'Ayesha Rahman', 'a@example.com', 'P', 'A', 'P', 3, 2, 0.667))
+        self.assertEqual(ayesha[1:10], (2302001, 'Ayesha Rahman', 'a@example.com', 'P', 'A', 'P', 3, 2, 0.666))
         self.assertEqual(tanvir[4:10], (None, 'P', 'A', 2, 1, 0.5))
         self.assertEqual(ws.freeze_panes, f'E{header_index + 2}')
 
@@ -240,7 +253,7 @@ class ExportEndpointTests(ExportTestCase):
 
         self.ayesha.user.first_name = '=HYPERLINK("http://bad.example","x")'
         self.ayesha.user.save()
-        rows = list(csv.reader(io.StringIO(self.export('format=csv').content.decode())))
+        rows = list(csv.reader(io.StringIO(self.export('format=csv').content.decode('utf-8-sig'))))
         self.assertTrue(rows[1][1].startswith("'="), rows[1][1])
         ws = load_workbook(io.BytesIO(self.export('format=xlsx').content)).active
         names = [cell.value for cell in ws['C'] if cell.value and 'HYPERLINK' in str(cell.value)]
@@ -257,7 +270,7 @@ class ExportEndpointTests(ExportTestCase):
         self.assertIn('Department: Computer Science and Engineering \\(CSE\\)', text)
         self.assertIn('Teacher: Karim Uddin', text)
         self.assertIn('06 Oct 2026, 02:30 AM \\(Dhaka time\\)', text)
-        self.assertIn('(66.7%)', text)
+        self.assertIn('(66.6%)', text)
         self.assertEqual(pdf_pages(content), 1)
 
     def test_pdf_splits_many_dates_so_id_name_and_percent_show_on_every_page(self):
@@ -301,7 +314,7 @@ class ExportEndpointTests(ExportTestCase):
         [table] = document.tables
         rows = [[cell.text for cell in row.cells] for row in table.rows]
         self.assertEqual(rows[0], ['#', 'Student ID', 'Name', '01 Sep', '08 Sep', '15 Sep', 'Held', 'Present', '%'])
-        self.assertEqual(rows[1], ['1', '2302001', 'Ayesha Rahman', 'P', 'A', 'P', '3', '2', '66.7%'])
+        self.assertEqual(rows[1], ['1', '2302001', 'Ayesha Rahman', 'P', 'A', 'P', '3', '2', '66.6%'])
         self.assertEqual(rows[2], ['2', '2302002', 'Tanvir Hasan', '', 'P', 'A', '2', '1', '50.0%'])
 
     def test_docx_splits_many_dates_into_tables(self):

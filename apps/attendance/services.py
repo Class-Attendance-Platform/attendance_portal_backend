@@ -300,17 +300,23 @@ def roll_call_version(rows) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def roll_call(course_info, day, present_ids, user, expected_version=None) -> dict:
+def roll_call(course_info, day, present_ids, user, expected_version=None, absent_ids=None) -> dict:
     """
-    Saves a roll call for a date (creates the class if missing). For each student enrolled
-    on that date: a log is created if missing; an existing one changes only if its status
-    differs (recorded like a correction). Other methods are never re-labelled.
+    Saves a roll call for a date (creates the class if missing). Students in `present_ids`
+    become present. With `absent_ids`, those become absent and the other enrolled students
+    are left as they are (no log is made for a student without a mark); without it (older
+    apps), every other student enrolled on that date is absent. A log is created if missing;
+    an existing one changes only if its status differs (recorded like a correction). Other
+    methods are never re-labelled.
     With `expected_version` (from the roll call list the page showed), raises DateChanged
     instead when the date's list or statuses changed since, so a stale page overwrites nothing.
+    Returns the enrolled students' day statuses afterwards: {present, absent, unmarked (no
+    log that day), changed (existing statuses that changed)}.
     """
     present_ids = {str(i) for i in present_ids}
+    absent_ids = None if absent_ids is None else {str(i) for i in absent_ids}
     now = timezone.now()
-    counts = {'present': 0, 'absent': 0, 'changed': 0}
+    counts = {'present': 0, 'absent': 0, 'unmarked': 0, 'changed': 0}
     with transaction.atomic():
         _lock_course(course_info)
         logs = defaultdict(list)
@@ -320,9 +326,20 @@ def roll_call(course_info, day, present_ids, user, expected_version=None) -> dic
             raise DateChanged()
         for membership in enrolled_memberships(course_info, day).select_related('student'):
             student = membership.student
-            is_present = str(student.id) in present_ids
-            counts['present' if is_present else 'absent'] += 1
-            status = AttendanceLog.Status.PRESENT if is_present else AttendanceLog.Status.ABSENT
-            if _set_status(course_info, student, day, status, logs[student.id], user, now, record_new=False) == 'changed':
+            student_logs = logs[student.id]
+            if str(student.id) in present_ids:
+                status = AttendanceLog.Status.PRESENT
+            elif absent_ids is None or str(student.id) in absent_ids:
+                status = AttendanceLog.Status.ABSENT
+            else:  # not marked: their day stays as it is (no log is made: on the join day it does not count)
+                if not student_logs:
+                    counts['unmarked'] += 1
+                elif day_status(student_logs)[0] == AttendanceLog.Status.PRESENT:
+                    counts['present'] += 1
+                else:
+                    counts['absent'] += 1
+                continue
+            counts['present' if status == AttendanceLog.Status.PRESENT else 'absent'] += 1
+            if _set_status(course_info, student, day, status, student_logs, user, now, record_new=False) == 'changed':
                 counts['changed'] += 1
     return counts

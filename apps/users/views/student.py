@@ -25,7 +25,16 @@ class StudentAttendanceView(APIView):
             return error_response('You can only view your own attendance.', status=403, code='permission_denied')
 
         # Import here to avoid circular dependency
+        from apps.academic.models import StudentClassroom
+        from apps.attendance.models import AttendanceSession
         from apps.attendance.records import get_student_attendance_summary
+        from apps.attendance.services import finalize_ended_sessions
+
+        # Save their class groups' sessions whose timer ran out first (as the course page does),
+        # so these numbers match it even when no teacher screen saved them
+        finalize_ended_sessions(AttendanceSession.objects.filter(
+            course_info__classroom_id__in=StudentClassroom.objects.filter(student=profile).values('classroom_id'),
+        ))
         data = get_student_attendance_summary(profile)
         return Response({'success': True, 'semesters': data})
 

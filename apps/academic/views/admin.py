@@ -18,7 +18,7 @@ from apps.academic.models import (
 from apps.academic.serializers import (
     CourseInfoTeacherSerializer, CourseSerializer, ProfileIdsSerializer, PromoteSerializer,
     SemesterCourseSerializer, SemesterCreateSerializer, SemesterUpdateSerializer,
-    admin_course_info_row, roster_row, semester_course_row, semester_row,
+    admin_course_info_row, person_name, roster_row, semester_course_row, semester_row,
     ClassroomSerializer, ClassroomStudentBulkSerializer,
     StudentInClassroomSerializer, CourseInfoSerializer,
     PromoteStudentsSerializer,
@@ -39,6 +39,44 @@ def _level_taken(level):
 
 def _true(value) -> bool:
     return str(value or '').strip().lower() in ('true', '1', 'yes')
+
+
+NAMES_IN_MESSAGE = 5
+
+
+def _already_in_semester(memberships, reopening=False):
+    """
+    409 already_in_semester: a student may be a current member of one active semester only.
+    `memberships` = their current memberships in the other semester(s) (one row per student).
+    """
+    first = {}
+    for m in sorted(memberships, key=lambda row: (row.student.student_id, row.classroom.semester.sort_key())):
+        first.setdefault(m.student_id, m)
+    students = [
+        {
+            'profile_id': str(m.student_id),
+            'student_id': m.student.student_id,
+            'name': person_name(m.student.user),
+            'semester_id': str(m.classroom.semester_id),
+            'semester_label': m.classroom.semester.label,
+        }
+        for m in first.values()
+    ]
+    names = [f"{s['name']} ({s['student_id']})" for s in students]
+    if len(names) == 1:
+        state = 'is now in' if reopening else 'is already in'
+        message = f"{names[0]} {state} {students[0]['semester_label']}."
+        fix = 'Remove them from that semester first.'
+    else:
+        listed = ', '.join(names[:NAMES_IN_MESSAGE])
+        if len(names) > NAMES_IN_MESSAGE:
+            listed += f' and {len(names) - NAMES_IN_MESSAGE} more'
+        state = 'are now in' if reopening else 'are already in'
+        message = f'{len(names)} students {state} another semester: {listed}.'
+        fix = 'Remove them there first.'
+    if reopening:
+        fix = 'Remove them from this semester before reopening it.'
+    return error_response(f'{message} {fix}', 409, code='already_in_semester', students=students)
 
 
 # ── Semesters ─────────────────────────────────────────────────────────────────
@@ -149,8 +187,19 @@ class SemesterReopenView(APIView):
         if not semester.is_active:
             if services.level_has_active_semester(semester.level, exclude=semester):
                 return _level_taken(semester.level)
-            semester.is_active = True
-            semester.save(update_fields=['is_active'])
+            # Its current members become current again: not while they are in another active
+            # semester (deleted accounts too, so restoring one later cannot make two)
+            try:
+                with transaction.atomic():
+                    services.check_one_semester(
+                        StudentClassroom.objects.filter(classroom__semester=semester, classroom__deleted=False)
+                        .current().values_list('student_id', flat=True),
+                        exclude=[semester],
+                    )
+                    semester.is_active = True
+                    semester.save(update_fields=['is_active'])
+            except services.AlreadyInSemester as clash:
+                return _already_in_semester(clash.memberships, reopening=True)
         return Response({'success': True, 'message': 'Semester reopened.', 'semester': semester_payload(semester)})
 
 
@@ -200,7 +249,10 @@ class SemesterStudentsView(APIView):
         return Response({'success': True, 'students': [roster_row(m) for m in members]})
 
     def post(self, request, uuid):
-        """Adds students (joined today; a former member comes back with the original joined_at)."""
+        """
+        Adds students (joined today; a former member comes back with the original joined_at).
+        409 when one of them is a current member of another active semester (nothing added).
+        """
         semester = get_object_or_404(Semester, id=uuid, deleted=False)
         serializer = ProfileIdsSerializer(data=request.data)
         if not serializer.is_valid():
@@ -208,10 +260,14 @@ class SemesterStudentsView(APIView):
         profiles, problem = _profiles_or_error(serializer.validated_data['profile_ids'])
         if problem:
             return problem
-        with transaction.atomic():
-            result = services.add_members(
-                services.main_classroom(semester), profiles, services.join_date(semester),
-            )
+        try:
+            with transaction.atomic():
+                services.check_one_semester([p.id for p in profiles], exclude=[semester])
+                result = services.add_members(
+                    services.main_classroom(semester), profiles, services.join_date(semester),
+                )
+        except services.AlreadyInSemester as clash:
+            return _already_in_semester(clash.memberships)
         return Response({
             'success': True,
             'message': _students_message('added', result['added'] + result['rejoined']),
@@ -327,29 +383,32 @@ class SemesterPromoteView(APIView):
             if members != set(profile_ids):
                 return validation_error_response({'profile_ids': ['Some of these students are not in this semester.']})
 
-        with transaction.atomic():
-            if data.get('target_semester_id'):
-                target = Semester.objects.filter(id=data['target_semester_id'], deleted=False).first()
-                if target is None:
-                    return validation_error_response({'target_semester_id': ['This semester was not found.']})
-            else:
-                wanted = data['target']
-                target = sort_semesters(Semester.objects.filter(
-                    level=wanted['level'], semester=wanted['semester'], session=wanted['session'], deleted=False,
-                ))
-                target = target[0] if target else None
-                if target is None:
-                    if services.level_has_active_semester(wanted['level'], exclude=source):
-                        return _level_taken(wanted['level'])
-                    target = services.create_semester(
-                        wanted['level'], wanted['semester'], wanted['session'],
-                        wanted.get('start_date'), wanted.get('end_date'),
+        try:
+            with transaction.atomic():
+                if data.get('target_semester_id'):
+                    target = Semester.objects.filter(id=data['target_semester_id'], deleted=False).first()
+                    if target is None:
+                        return validation_error_response({'target_semester_id': ['This semester was not found.']})
+                else:
+                    wanted = data['target']
+                    target = sort_semesters(Semester.objects.filter(
+                        level=wanted['level'], semester=wanted['semester'], session=wanted['session'], deleted=False,
+                    ))
+                    target = target[0] if target else None
+                    if target is None:
+                        if services.level_has_active_semester(wanted['level'], exclude=source):
+                            return _level_taken(wanted['level'])
+                        target = services.create_semester(
+                            wanted['level'], wanted['semester'], wanted['session'],
+                            wanted.get('start_date'), wanted.get('end_date'),
+                        )
+                if target.id == source.id:
+                    return validation_error_response(
+                        {'target_semester_id': ['Choose a different semester to move the students to.']},
                     )
-            if target.id == source.id:
-                return validation_error_response(
-                    {'target_semester_id': ['Choose a different semester to move the students to.']},
-                )
-            moved = services.promote(source, target, profile_ids)
+                moved = services.promote(source, target, profile_ids)
+        except services.AlreadyInSemester as clash:  # in a third active semester: nothing changed
+            return _already_in_semester(clash.memberships)
 
         return Response({
             'success': True,
@@ -508,7 +567,18 @@ class ClassroomDetailView(APIView):
         classroom = get_object_or_404(Classroom, id=uuid, deleted=False)
         serializer = ClassroomSerializer(classroom, data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            semester = serializer.validated_data.get('semester', classroom.semester)
+            try:
+                with transaction.atomic():
+                    if semester.pk != classroom.semester_id:
+                        # Its current members move with it: not into a second active semester
+                        services.check_one_semester(
+                            classroom.memberships.current().values_list('student_id', flat=True),
+                            exclude=[semester], moving=classroom,
+                        )
+                    serializer.save()
+            except services.AlreadyInSemester as clash:
+                return _already_in_semester(clash.memberships)
             return Response({'success': True, 'classroom': serializer.data})
         return validation_error_response(serializer.errors)
 
@@ -544,7 +614,12 @@ class ClassroomStudentsView(APIView):
         student_ids = serializer.validated_data['student_ids']
         students = {s.id: s for s in StudentProfile.objects.filter(id__in=student_ids, user__deleted=False)}
         already = set(classroom.memberships.current().filter(student_id__in=students).values_list('student_id', flat=True))
-        services.add_members(classroom, students.values(), services.join_date(classroom.semester))
+        try:
+            with transaction.atomic():
+                services.check_one_semester(list(students), exclude=[classroom.semester])
+                services.add_members(classroom, students.values(), services.join_date(classroom.semester))
+        except services.AlreadyInSemester as clash:
+            return _already_in_semester(clash.memberships)
 
         return Response({
             'success': True,
