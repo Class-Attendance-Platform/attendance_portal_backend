@@ -14,7 +14,7 @@ from apps.attendance.services import finalize_session
 from apps.attendance.tests.helpers import (
     check_in, client_for, make_admin, make_course_info, make_semester, make_student, make_teacher, start_session,
 )
-from apps.faces.services import FaceError, recognize_class, save_face_attendance
+from apps.faces.services import recognize_class, save_face_attendance
 
 D1, D2, D3 = (datetime.date(2026, 9, d) for d in (1, 2, 3))
 
@@ -145,12 +145,14 @@ class FaceTests(MembershipTestCase):
             result = recognize_class(self.ci, [upload])
         self.assertEqual([r['student_id'] for r in result['students']], [2302001, 2302003])
 
-    def test_saving_rejects_students_not_enrolled_that_day(self):
-        with self.assertRaises(FaceError):
-            save_face_attendance(self.ci, [self.left.id], day=self.today)
-        with self.assertRaises(FaceError):
-            save_face_attendance(self.ci, [self.late.id], day=D1)
+    def test_saving_skips_students_not_enrolled_that_day(self):
+        session = save_face_attendance(self.ci, [self.left.id], day=self.today)
+        self.assertEqual([s['profile_id'] for s in session.skipped], [str(self.left.id)])
+        self.assertFalse(session.logs.filter(student=self.left).exists())
+        session = save_face_attendance(self.ci, [self.late.id], day=D1)
+        self.assertEqual([s['profile_id'] for s in session.skipped], [str(self.late.id)])
         session = save_face_attendance(self.ci, [self.left.id], day=D1)
+        self.assertEqual(session.skipped, [])
         self.assertEqual(
             dict(session.logs.values_list('student__student_id', 'status')),
             {2302001: 'ABSENT', 2302002: 'PRESENT'},

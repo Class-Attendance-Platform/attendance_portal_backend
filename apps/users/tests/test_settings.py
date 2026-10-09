@@ -14,7 +14,7 @@ APP_KEYS = (
     'WEB_URL', 'MIN_APP_VERSION', 'LATEST_APP_VERSION', 'ATTENDANCE_MIN_PERCENT',
     'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL',
     'THROTTLE_LOGIN', 'THROTTLE_LOGIN_IP', 'THROTTLE_REGISTER', 'THROTTLE_REGISTER_IP', 'THROTTLE_PASSWORD_FORGOT',
-    'THROTTLE_CHECK_IN', 'NUM_PROXIES',
+    'THROTTLE_CHECK_IN', 'THROTTLE_FACE_REGISTER', 'NUM_PROXIES',
 )
 
 
@@ -41,14 +41,14 @@ class SettingsTests(SimpleTestCase):
         self.assertEqual(s.EMAIL_HOST_USER, '')  # empty = password reset by email is off
         self.assertEqual(s.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'], {
             'login': '10/min', 'login_ip': '300/min', 'register': '10/hour', 'register_ip': '300/hour',
-            'password_forgot': '20/hour', 'check_in': '30/min',
+            'password_forgot': '20/hour', 'check_in': '30/min', 'face_register': '20/hour',
         })
 
     def test_values_from_env(self):
         s = load_base_settings(
             WEB_URL='https://portal.example/', MIN_APP_VERSION='1.2.0', LATEST_APP_VERSION='1.4.1',
             ATTENDANCE_MIN_PERCENT='80', EMAIL_HOST_USER='portal@gmail.com', EMAIL_HOST_PASSWORD='not-a-real-one',
-            THROTTLE_CHECK_IN='60/min',
+            THROTTLE_CHECK_IN='60/min', THROTTLE_FACE_REGISTER='5/hour',
         )
         self.assertEqual(s.WEB_URL, 'https://portal.example')  # no trailing slash
         self.assertEqual((s.MIN_APP_VERSION, s.LATEST_APP_VERSION), ('1.2.0', '1.4.1'))
@@ -56,6 +56,7 @@ class SettingsTests(SimpleTestCase):
         self.assertEqual(s.EMAIL_HOST_PASSWORD, 'not-a-real-one')
         self.assertEqual(s.DEFAULT_FROM_EMAIL, 'HSTU Attendance Portal <portal@gmail.com>')
         self.assertEqual(s.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['check_in'], '60/min')
+        self.assertEqual(s.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']['face_register'], '5/hour')
 
     def test_env_example_lists_the_keys_with_comments_on_their_own_lines(self):
         lines = ENV_EXAMPLE.read_text(encoding='utf-8').splitlines()
