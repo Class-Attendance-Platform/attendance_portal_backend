@@ -71,3 +71,8 @@ class PasswordForgotThrottle(IPRateThrottle):
 class CheckInThrottle(FailOpenMixin, UserRateThrottle):
     """Per signed-in student (falls back to the IP)."""
     scope = 'check_in'
+
+
+class FaceRegisterThrottle(FailOpenMixin, UserRateThrottle):
+    """Face registrations per signed-in student: each one runs the face engine on 3 photos."""
+    scope = 'face_register'

@@ -14,7 +14,9 @@ from django.utils import timezone
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from apps.academic.models import StudentClassroom
-from apps.attendance.models import AttendanceLog, AttendanceSession
+from apps.academic.serializers import person_name
+from apps.attendance.models import AttendanceChange, AttendanceLog, AttendanceSession
+from apps.attendance.services import _change, _lock_course, enrolled_memberships
 from apps.faces.engines import get_engine
 from apps.faces.models import StudentFace
 
@@ -24,6 +26,7 @@ MAX_IMAGE_PIXELS = 50_000_000  # refuse bigger images before decoding them (memo
 SELFIE_MAX_SIDE = 640
 MIN_FACE_PIXELS = 60           # registration: face must be at least this wide
 POSE_LABELS = {'STRAIGHT': 'straight', 'LEFT': 'left', 'RIGHT': 'right'}
+PHOTO_ORDINALS = ('first', 'second', 'third')
 
 
 class FaceError(Exception):
@@ -72,6 +75,13 @@ def jpeg_data_url(data) -> str:
 def _area(face):
     x1, y1, x2, y2 = face.box
     return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
+def class_photo_label(index, count) -> str:
+    """How messages name a class photo: "photo" when only one was sent, else "second photo"."""
+    if count == 1:
+        return 'photo'
+    return f'{PHOTO_ORDINALS[index]} photo' if index < len(PHOTO_ORDINALS) else f'photo {index + 1}'
 
 
 # ── Student registration ──────────────────────────────────────────────────────
@@ -162,7 +172,7 @@ def recognize_class(course_info, uploads: list) -> dict:
 
     photos, detections = [], []
     for photo_index, upload in enumerate(uploads):
-        image = read_image(upload, f'photo {photo_index + 1}')
+        image = read_image(upload, class_photo_label(photo_index, len(uploads)))
         photos.append({'index': photo_index, 'width': image.shape[1], 'height': image.shape[0]})
         for face in engine.analyze(image, max_side=settings.FACE_CLASS_PHOTO_MAX_SIDE):
             detections.append((photo_index, face))
@@ -237,42 +247,72 @@ def recognize_class(course_info, uploads: list) -> dict:
     }
 
 
-def save_face_attendance(course_info, present_ids, day=None) -> AttendanceSession:
-    """Saves the teacher-confirmed result as a finished FACE session."""
+def save_face_attendance(course_info, present_ids, day=None, user=None, teacher_marked_ids=()) -> AttendanceSession:
+    """
+    Saves the teacher-confirmed result as the date's finished FACE session: present students
+    with method FACE, or TEACHER for `teacher_marked_ids` (switched to present by hand), everyone
+    else enrolled that day absent. Saving again the same day reuses that session and deletes
+    nothing: only logs whose status differs change (status, method, time), and when such a log
+    had been corrected by a teacher, the change is recorded like a correction by `user`.
+    Present ids of class group members who are not enrolled that day (they left, joined later,
+    or their account was deleted while the teacher reviewed) are skipped: the returned session's
+    `skipped` lists them as [{profile_id, name}]. An id never in the class group raises FaceError.
+    """
     now = timezone.now()
     day = day or timezone.localdate()
-    enrolled = [
-        m.student for m in StudentClassroom.objects.filter(
-            classroom=course_info.classroom
-        ).enrolled_on(day).active_accounts().select_related('student')
-    ]
-    enrolled_ids = {str(s.id) for s in enrolled}
     present_ids = {str(i) for i in present_ids}
-    if not present_ids <= enrolled_ids:
-        raise FaceError('Some selected students are not in this course.')
+    marked_ids = {str(i) for i in teacher_marked_ids}
 
     with transaction.atomic():
-        # Taking face attendance again the same day replaces the earlier face result.
-        AttendanceSession.objects.filter(
-            course_info=course_info, date=day, mode=AttendanceSession.Mode.FACE,
-        ).delete()
-        session = AttendanceSession.objects.create(
-            course_info=course_info,
-            date=day,
-            mode=AttendanceSession.Mode.FACE,
-            is_active=False,
-            ended_at=now,
-            duration_seconds=0,
+        _lock_course(course_info)  # one save, correction or roll call of the course at a time
+        members = {
+            str(m.student_id): m.student for m in StudentClassroom.objects.filter(
+                classroom_id=course_info.classroom_id,
+            ).select_related('student__user')
+        }
+        if not present_ids.issubset(members):
+            raise FaceError('Some selected students are not in this course.')
+        enrolled = [m.student for m in enrolled_memberships(course_info, day).select_related('student')]
+        skipped = sorted(
+            (members[i] for i in present_ids - {str(s.id) for s in enrolled}), key=lambda s: s.student_id,
         )
-        time_now = timezone.localtime(now).time()
-        AttendanceLog.objects.bulk_create([
-            AttendanceLog(
-                session=session, course_info=course_info, student=student, date=session.date,
-                time=time_now, source=AttendanceLog.Source.FACE,
-                status=AttendanceLog.Status.PRESENT if str(student.id) in present_ids
-                else AttendanceLog.Status.ABSENT,
-                method=AttendanceLog.Method.FACE if str(student.id) in present_ids else '',
+
+        session = AttendanceSession.objects.filter(
+            course_info=course_info, date=day, mode=AttendanceSession.Mode.FACE,
+        ).first()
+        if session is None:
+            session = AttendanceSession.objects.create(
+                course_info=course_info,
+                date=day,
+                mode=AttendanceSession.Mode.FACE,
+                is_active=False,
+                ended_at=now,
+                duration_seconds=0,
             )
-            for student in enrolled
-        ])
+        logs = {log.student_id: log for log in AttendanceLog.objects.select_for_update().filter(session=session)}
+        time_now = timezone.localtime(now).time()
+        new_logs, changed_logs, changes = [], [], []
+        for student in enrolled:
+            if str(student.id) in present_ids:
+                status = AttendanceLog.Status.PRESENT
+                method = AttendanceLog.Method.TEACHER if str(student.id) in marked_ids else AttendanceLog.Method.FACE
+            else:
+                status, method = AttendanceLog.Status.ABSENT, ''
+            log = logs.get(student.id)
+            if log is None:
+                new_logs.append(AttendanceLog(
+                    session=session, course_info=course_info, student=student, date=day,
+                    time=time_now, source=AttendanceLog.Source.FACE, status=status, method=method,
+                ))
+            elif log.status != status:
+                if log.changed_by_id or log.changed_at:  # a teacher changed it before: keep the trail going
+                    changes.append(_change(log, status, user, now))
+                log.status, log.method, log.time = status, method, time_now
+                changed_logs.append(log)
+        AttendanceLog.objects.bulk_create(new_logs)
+        AttendanceLog.objects.bulk_update(
+            changed_logs, ['status', 'method', 'time', 'changed_by', 'changed_at', 'is_modified_by_teacher'],
+        )
+        AttendanceChange.objects.bulk_create(changes)
+    session.skipped = [{'profile_id': str(s.id), 'name': person_name(s.user)} for s in skipped]
     return session
