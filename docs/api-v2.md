@@ -36,9 +36,11 @@ one class.
   and filters run on the server with query parameters where listed.
 - Throttles (DRF): login 10/min per IP + email (a class signs in together from one campus IP) with a
   300/min cap per IP, register 10/hour per IP + email (failed tries count too) with a 300/hour cap per
-  IP, password forgot 20/hour per IP, check-in 30/min per user. Throttled requests get 429 with a `message` (`code: "throttled"`,
-  `Retry-After` header). The rates are settings (section 10). The counts live in the cache (Redis);
-  while it cannot be reached the limits are skipped (logged), so signing in never needs Redis.
+  IP, password forgot 20/hour per IP, check-in 30/min per user, face registration 20/hour per user
+  (POST /faces/me/ only: each one runs the face engine; failed tries count too). Throttled requests
+  get 429 with a `message` (`code: "throttled"`, `Retry-After` header). The rates are settings
+  (section 10). The counts live in the cache (Redis); while it cannot be reached the limits are
+  skipped (logged), so signing in never needs Redis.
 
 ## 1. Accounts and sign-in
 
@@ -521,10 +523,31 @@ without a log for them. The app's words: "Marked absent by teacher", "Marked abs
 
 ## 8. Faces, reports
 
-- Faces: as today. Course detail and course list carry face registration counts (section 6).
-  POST /faces/recognize/ and /faces/confirm/ answer 404 for a deleted course-info, course or
-  semester and 400 `code: "semester_finished"` for a course of a finished semester (as starting a
-  live session, section 5).
+- Faces: as today, plus the changes below. Course detail and course list carry face registration
+  counts (section 6). POST /faces/recognize/ and /faces/confirm/ answer 404 for a deleted
+  course-info, course or semester and 400 `code: "semester_finished"` for a course of a finished
+  semester (as starting a live session, section 5).
+  POST /faces/me/ (a student registers 3 photos) is limited to 20 an hour per student
+  (`THROTTLE_FACE_REGISTER`; 429 `code: "throttled"`); GET and DELETE /faces/me/ are not limited.
+  Photo problems name the photo: registration "the straight / left / right photo"; class photos
+  "the photo" when one was sent, else "the first / second / third photo" (e.g. "The second photo is
+  too large (10 MB at most).", "Could not read the photo. Please use a JPG or PNG image.").
+  POST /faces/confirm/ `{course_info_id, present_student_ids: [..], teacher_marked_ids?: [..],
+  date?}` → 201 `{success, session_id, date, total_present, skipped: [{profile_id, name}]}`. `date`
+  must be today (omitted = today): a future date → 400 `code: "future_date"`, another date → 400
+  `code: "not_today"` ("Class photo attendance is for today only. Use roll call for other dates.").
+  Present students are saved with method FACE ("Class photo"), those also in `teacher_marked_ids`
+  (switched to Present by hand in the review; other ids there are ignored) with method TEACHER
+  ("Marked by teacher"); everyone else enrolled that day is absent (method ""). **Saving again the
+  same day deletes nothing**: the date's FACE session is reused (created if missing) and only logs
+  whose status differs change (status, method, time); students without a log in it get one. When
+  such a log had been changed by a teacher before (a correction or a roll call change), the change
+  is recorded like a correction (AttendanceChange old → new, `changed_by` = this teacher, the log's
+  `changed_by` / `changed_at` updated). Ids of students in the course's class group who are not
+  enrolled that day or whose account is deleted (e.g. removed while the teacher reviewed) are
+  skipped and listed in `skipped` (always present, maybe empty; by student id); an id never in the
+  class group → 400 ("Some selected students are not in this course."), nothing saved.
+  `total_present` = the session's present students (deleted accounts not counted).
 - GET /reports/course-info/<id>/export/?format=pdf|xlsx|csv|docx&date=YYYY-MM-DD (exists).
   Fixes: generated time in Asia/Dhaka; join dates respected (not enrolled = blank, not absent); the
   PDF splits the date grid across pages so ID, name and % are always visible; header has course,
@@ -580,6 +603,6 @@ without a log for them. The app's words: "Marked absent by teacher", "Marked abs
 - `WEB_URL` (https://attendanceportal.sakibkx.tech) for links in emails and QR codes.
 - `MIN_APP_VERSION`, `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT` (75).
 - Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_LOGIN_IP`, `THROTTLE_REGISTER`, `THROTTLE_REGISTER_IP`,
-  `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`
+  `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`, `THROTTLE_FACE_REGISTER`
   (defaults as in Conventions; raise them if a class behind one campus IP gets blocked). `NUM_PROXIES`
   (production, default 1 = nginx) picks the visitor IP from `X-Forwarded-For`.

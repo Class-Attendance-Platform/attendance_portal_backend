@@ -112,8 +112,8 @@ REST_FRAMEWORK = {
     # Every error carries a readable "message" (config/errors.py)
     'EXCEPTION_HANDLER': 'config.errors.api_exception_handler',
     # Per IP + email (login, register), per IP (the wide caps, password_forgot) or per user
-    # (check_in); see apps/users/throttles.py. Classes behind one shared campus IP may need
-    # higher limits: raise them in .env.
+    # (check_in, face_register); see apps/users/throttles.py. Classes behind one shared campus IP
+    # may need higher limits: raise them in .env.
     'DEFAULT_THROTTLE_RATES': {
         # A class signs in or signs up together from one campus IP: login and sign-up count per
         # IP + email, with a wide per-IP cap; the reset count allows a whole class.
@@ -123,6 +123,8 @@ REST_FRAMEWORK = {
         'register_ip': config('THROTTLE_REGISTER_IP', default='300/hour'),
         'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='20/hour'),
         'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
+        # Each face registration (POST /faces/me/) runs the face engine on 3 photos
+        'face_register': config('THROTTLE_FACE_REGISTER', default='20/hour'),
     },
 }
 

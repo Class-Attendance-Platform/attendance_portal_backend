@@ -1,21 +1,24 @@
+import datetime
 import io
 import unittest
 from unittest import mock
 
 import numpy as np
 from django.conf import settings
+from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from PIL import Image
 
-from apps.academic.models import Course, Semester
-from apps.attendance.models import AttendanceLog, AttendanceSession
+from apps.academic.models import Course, Semester, StudentClassroom
+from apps.attendance.models import AttendanceChange, AttendanceLog, AttendanceSession
 from apps.attendance.tests.helpers import (
     client_for, make_admin, make_course_info, make_student, make_teacher,
 )
 from apps.faces.engines import DetectedFace, FaceEngineUnavailable
 from apps.faces.models import StudentFace
-from apps.faces.services import embedding_to_bytes
+from apps.faces.services import class_photo_label, embedding_to_bytes
 
 
 def person(n, noise=0.0, seed=0):
@@ -161,6 +164,20 @@ class RegistrationTests(FaceTestCase):
         self.assertEqual(res.status_code, 503)
         self.assertIn('not set up', res.data['message'])
 
+    def test_registering_is_limited_to_20_an_hour_per_student(self):
+        cache.clear()
+        client = client_for(self.student.user)
+        for _ in range(20):  # every try counts, also the ones refused (here: no photos sent)
+            self.assertEqual(client.post('/api/faces/me/', {'consent': 'true'}, format='multipart').status_code, 400)
+        res = client.post('/api/faces/me/', {'consent': 'true'}, format='multipart')
+        self.assertEqual((res.status_code, res.data['code']), (429, 'throttled'))
+        self.assertTrue(res.data['message'].startswith('Too many attempts. Please try again in'))
+        self.assertIn('Retry-After', res.headers)
+        # The status and deleting stay open; another student has a count of their own
+        self.assertEqual(client.get('/api/faces/me/').status_code, 200)
+        self.assertEqual(client.delete('/api/faces/me/').status_code, 200)
+        self.register_ok(make_student('b@example.com', 2302002), 2)
+
 
 class ClassPhotoTests(FaceTestCase):
     def setUp(self):
@@ -223,21 +240,57 @@ class ClassPhotoTests(FaceTestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn('Could not read', res.data['message'])
 
+    def test_photo_problems_name_the_photo(self):
+        def unreadable():
+            return SimpleUploadedFile('x.jpg', b'not an image', content_type='image/jpeg')
+
+        res = self.recognize(unreadable())
+        self.assertEqual(res.data['message'], 'Could not read the photo. Please use a JPG or PNG image.')
+        res = self.recognize(self.photo(), unreadable())
+        self.assertEqual(res.data['message'], 'Could not read the second photo. Please use a JPG or PNG image.')
+        too_big = SimpleUploadedFile('big.jpg', b'x' * 5001, content_type='image/jpeg')
+        with mock.patch('apps.faces.services.MAX_UPLOAD_BYTES', 5000):  # the test photos are far smaller
+            res = self.recognize(self.photo(), self.photo(), too_big)
+        self.assertEqual((res.status_code, res.data['message']), (400, 'The third photo is too large (10 MB at most).'))
+        self.assertEqual(class_photo_label(3, 4), 'photo 4')  # never more than 3 through the API
+
     def confirm(self, present, client=None, **extra):
         return (client or self.client).post('/api/faces/confirm/', {
             'course_info_id': str(self.ci.id), 'present_student_ids': present, **extra,
         }, format='json')
 
     def test_confirm_saves_face_attendance(self):
-        res = self.confirm([str(self.students[0].id), str(self.students[4].id)], date='2026-10-05')
+        res = self.confirm([str(self.students[0].id), str(self.students[4].id)])
 
         self.assertEqual(res.status_code, 201)
-        self.assertEqual(res.data['total_present'], 2)
+        self.assertEqual((res.data['total_present'], res.data['skipped']), (2, []))
+        today = timezone.localdate()
+        self.assertEqual(res.data['date'], today.isoformat())
         session = AttendanceSession.objects.get(id=res.data['session_id'])
-        self.assertEqual((session.mode, session.is_active, str(session.date)), ('FACE', False, '2026-10-05'))
-        statuses = dict(AttendanceLog.objects.filter(session=session).values_list('student__student_id', 'status'))
-        self.assertEqual(statuses, {2302001: 'PRESENT', 2302002: 'ABSENT', 2302003: 'ABSENT', 2302004: 'ABSENT', 2302005: 'PRESENT'})
+        self.assertEqual((session.mode, session.is_active, session.date), ('FACE', False, today))
+        logs = {
+            number: (status, method) for number, status, method in AttendanceLog.objects.filter(
+                session=session,
+            ).values_list('student__student_id', 'status', 'method')
+        }
+        self.assertEqual(logs, {
+            2302001: ('PRESENT', 'FACE'), 2302002: ('ABSENT', ''), 2302003: ('ABSENT', ''),
+            2302004: ('ABSENT', ''), 2302005: ('PRESENT', 'FACE'),
+        })
         self.assertEqual(set(AttendanceLog.objects.values_list('source', flat=True)), {'FACE'})
+
+    def test_confirm_is_for_today_only(self):
+        today = timezone.localdate()
+        res = self.confirm([str(self.students[0].id)], date=(today + datetime.timedelta(days=1)).isoformat())
+        self.assertEqual((res.status_code, res.data['code']), (400, 'future_date'))
+        res = self.confirm([str(self.students[0].id)], date=(today - datetime.timedelta(days=1)).isoformat())
+        self.assertEqual((res.status_code, res.data['code']), (400, 'not_today'))
+        self.assertEqual(res.data['message'],
+                         'Class photo attendance is for today only. Use roll call for other dates.')
+        self.assertEqual(self.confirm([str(self.students[0].id)], date='09/10/2026').status_code, 400)
+        self.assertFalse(AttendanceSession.objects.exists())
+        res = self.confirm([str(self.students[0].id)], date=today.isoformat())
+        self.assertEqual((res.status_code, res.data['date']), (201, today.isoformat()))
 
     def test_confirm_rejects_students_from_other_classes(self):
         outsider = make_student('x@example.com', 2399999)
@@ -269,6 +322,123 @@ class ClassPhotoTests(FaceTestCase):
             'course_info_id': str(self.ci.id), 'mode': 'FACE',
         }, format='json')
         self.assertEqual(res.status_code, 400)
+
+
+class ConfirmTests(FaceTestCase):
+    """Saving the reviewed list: hand marks, saving again the same day, students who left meanwhile."""
+
+    def setUp(self):
+        super().setUp()
+        self.teacher = make_teacher('teacher@example.com')
+        self.s1, self.s2, self.s3, self.s4 = (make_student(f's{i}@example.com', 2302000 + i) for i in range(1, 5))
+        self.ci = make_course_info(self.teacher, students=[self.s1, self.s2, self.s3, self.s4])
+        self.client = client_for(self.teacher.user)
+        self.today = timezone.localdate()
+
+    def confirm(self, present, marked=None):
+        body = {'course_info_id': str(self.ci.id), 'present_student_ids': [str(s.id) for s in present]}
+        if marked is not None:
+            body['teacher_marked_ids'] = [str(s.id) for s in marked]
+        res = self.client.post('/api/faces/confirm/', body, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        return res.data
+
+    def face_log(self, student):
+        return AttendanceLog.objects.get(student=student, session__mode='FACE')
+
+    def test_students_marked_present_by_hand_are_saved_as_marked_by_teacher(self):
+        self.confirm([self.s1, self.s2], marked=[self.s2, self.s3])  # s3 is not present: ignored
+        logs = {log.student_id: (log.status, log.method) for log in AttendanceLog.objects.all()}
+        self.assertEqual(logs, {
+            self.s1.id: ('PRESENT', 'FACE'), self.s2.id: ('PRESENT', 'TEACHER'),
+            self.s3.id: ('ABSENT', ''), self.s4.id: ('ABSENT', ''),
+        })
+        [day] = self.client.get(f'/api/sessions/course-info/{self.ci.id}/history/').data['history']
+        self.assertEqual({row['student_id']: row['method'] for row in day['logs']},
+                         {2302001: 'FACE', 2302002: 'TEACHER', 2302003: None, 2302004: None})
+        res = self.client.post('/api/faces/confirm/', {
+            'course_info_id': str(self.ci.id), 'present_student_ids': [], 'teacher_marked_ids': 'all',
+        }, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_saving_again_keeps_corrections_and_their_history(self):
+        first = self.confirm([self.s1])
+        res = self.client.put(f'/api/teacher/course-info/{self.ci.id}/attendance/', {
+            'date': self.today.isoformat(), 'profile_id': str(self.s4.id), 'status': 'PRESENT',
+        }, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+
+        # A new photo finds s2 instead of s1; the review starts with s4's correction applied
+        again = self.confirm([self.s2, self.s4], marked=[self.s4])
+        self.assertEqual(again['session_id'], first['session_id'])  # the same session: nothing deleted
+        self.assertEqual(AttendanceSession.objects.count(), 1)
+        corrected = self.face_log(self.s4)
+        self.assertEqual((corrected.status, corrected.changed_by_id), ('PRESENT', self.teacher.user.id))
+        self.assertEqual(AttendanceChange.objects.count(), 1)  # only the correction: a new photo result is not one
+        self.assertEqual((self.face_log(self.s1).status, self.face_log(self.s1).method), ('ABSENT', ''))
+        self.assertEqual((self.face_log(self.s2).status, self.face_log(self.s2).method), ('PRESENT', 'FACE'))
+        self.assertEqual(again['total_present'], 2)
+
+        # The teacher unticks s4 the next time: recorded like a correction
+        self.confirm([self.s2])
+        corrected.refresh_from_db()
+        self.assertEqual((corrected.status, corrected.changed_by_id), ('ABSENT', self.teacher.user.id))
+        self.assertEqual(
+            list(AttendanceChange.objects.filter(log=corrected).values_list('old_status', 'new_status', 'changed_by')),
+            [('PRESENT', 'ABSENT', self.teacher.user.id), ('ABSENT', 'PRESENT', self.teacher.user.id)],
+        )
+
+    def test_saving_again_records_a_change_to_a_roll_call_change(self):
+        self.confirm([self.s1])
+        res = self.client.post(f'/api/teacher/course-info/{self.ci.id}/roll-call/', {
+            'date': self.today.isoformat(), 'present_profile_ids': [str(self.s1.id), str(self.s3.id)],
+        }, format='json')
+        self.assertEqual((res.status_code, res.data['changed']), (200, 1))
+        self.confirm([self.s1])  # a new photo without s3
+        log = self.face_log(self.s3)
+        self.assertEqual((log.status, log.changed_by_id), ('ABSENT', self.teacher.user.id))
+        self.assertEqual(list(AttendanceChange.objects.filter(log=log).values_list('old_status', 'new_status')),
+                         [('PRESENT', 'ABSENT'), ('ABSENT', 'PRESENT')])
+
+    def test_a_student_added_after_the_first_save_gets_a_log(self):
+        self.confirm([self.s1])
+        newcomer = make_student('s5@example.com', 2302005)
+        StudentClassroom.objects.create(student=newcomer, classroom=self.ci.classroom, joined_at=self.today)
+        self.confirm([self.s1, newcomer])
+        self.assertEqual((self.face_log(newcomer).status, self.face_log(newcomer).method), ('PRESENT', 'FACE'))
+
+    def test_students_who_left_or_were_deleted_during_the_review_are_skipped(self):
+        # While the teacher reviewed (no class saved yet today): s3 was removed, s2's account deleted
+        StudentClassroom.objects.filter(student=self.s3).update(left_at=self.today)
+        admin = client_for(make_admin('admin@example.com'))
+        self.assertEqual(admin.delete(f'/api/admin/students/{self.s2.id}/').status_code, 200)
+
+        saved = self.confirm([self.s1, self.s2, self.s3])
+        self.assertEqual(saved['skipped'], [
+            {'profile_id': str(self.s2.id), 'name': 'Student 2302002'},
+            {'profile_id': str(self.s3.id), 'name': 'Student 2302003'},
+        ])
+        self.assertEqual(saved['total_present'], 1)
+        statuses = dict(AttendanceLog.objects.values_list('student__student_id', 'status'))
+        self.assertEqual(statuses, {2302001: 'PRESENT', 2302004: 'ABSENT'})
+
+    def test_a_deleted_students_earlier_log_is_kept_and_not_counted(self):
+        self.confirm([self.s1, self.s2])
+        admin = client_for(make_admin('admin@example.com'))
+        self.assertEqual(admin.delete(f'/api/admin/students/{self.s2.id}/').status_code, 200)
+        saved = self.confirm([self.s1, self.s2])
+        self.assertEqual([row['profile_id'] for row in saved['skipped']], [str(self.s2.id)])
+        self.assertEqual(saved['total_present'], 1)
+        self.assertEqual(self.face_log(self.s2).status, 'PRESENT')  # untouched, not deleted
+
+    def test_an_id_never_in_the_class_group_saves_nothing(self):
+        outsider = make_student('x@example.com', 2399999)
+        res = self.client.post('/api/faces/confirm/', {
+            'course_info_id': str(self.ci.id), 'present_student_ids': [str(self.s1.id), str(outsider.id)],
+        }, format='json')
+        self.assertEqual((res.status_code, res.data['message']),
+                         (400, 'Some selected students are not in this course.'))
+        self.assertFalse(AttendanceSession.objects.exists())
 
 
 class AdminFaceTests(FaceTestCase):
@@ -350,10 +520,12 @@ class ReviewFixTests(FaceTestCase):
 
     def test_redo_on_the_same_day_replaces_the_earlier_face_result(self):
         confirm = lambda ids: self.client.post('/api/faces/confirm/', {
-            'course_info_id': str(self.ci.id), 'present_student_ids': ids, 'date': '2026-10-05',
+            'course_info_id': str(self.ci.id), 'present_student_ids': ids,
         }, format='json')
-        self.assertEqual(confirm([str(self.a.id), str(self.b.id)]).status_code, 201)
-        self.assertEqual(confirm([str(self.a.id)]).status_code, 201)
+        first = confirm([str(self.a.id), str(self.b.id)])
+        self.assertEqual(first.status_code, 201)
+        again = confirm([str(self.a.id)])
+        self.assertEqual((again.status_code, again.data['session_id']), (201, first.data['session_id']))
         self.assertEqual(AttendanceSession.objects.filter(mode='FACE').count(), 1)
         statuses = dict(AttendanceLog.objects.values_list('student__student_id', 'status'))
         self.assertEqual(statuses, {2302001: 'PRESENT', 2302002: 'ABSENT'})
