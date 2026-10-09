@@ -62,7 +62,7 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   tokens, then deletes; refuses the last active admin), `cleanup_broken_signups` (accounts without a
   profile; dry run, `--apply`). `permissions.py`: role classes + `can_manage_course(user, course_info)`
   (admin, or the course's own teacher) + `not_your_course_response()`. `throttles.py` (login and register per IP +
-  email with a wide per-IP cap; password forgot per IP; check-in per user). `services.py` (tokens,
+  email with a wide per-IP cap; password forgot per IP; check-in and face registration per user). `services.py` (tokens,
   blocking tokens, reset emails, temporary passwords). `jwt.py`: tokens carry a password fingerprint
   (`CHECK_REVOKE_TOKEN`): a password change/reset ends other devices' access tokens at once; the refresh
   serializer gives older refresh tokens the fingerprint. `importing.py` (admin CSV/XLSX student import). Views: `auth` (login, register,
@@ -75,14 +75,17 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   rows: history), CourseInfo (course + teacher + semester + classroom = one taught class).
   `services.py`: `main_classroom`, `create_semester`, `join_date` (null before the semester's first
   class, else today), `leave_date` (today, or tomorrow when the class group held or holds a class
-  today), `add_members`/`remove_members`, `promote` (finishes the source). On the join day only
+  today), `add_members`/`remove_members` (a student is current in one active semester at most:
+  `already_in_semester`), `promote` (finishes the source). On the join day only
   classes that logged the student count (`StudentClassroom.counts_on`). `stats.py`:
-  `course_numbers()` (held/attended/percent per student inside their membership, class count,
-  average, below-min) and `semester_numbers()`. Command `backfill_join_dates` (dry run, `--apply`):
+  `course_numbers()` (held/attended/percent per student inside their membership, percentages rounded
+  down to 0.1, class count, average, below-min) and `semester_numbers()`. Command `backfill_join_dates` (dry run, `--apply`):
   join dates for students added mid-semester under the old app, guessed from their first log.
   `views/teacher.py`: teacher's courses (current/previous with numbers, face counts, live session), course detail, one student's days, live lookup,
   single-student correction (PUT `attendance/`), roll call (GET = who is enrolled that date + a
-  `version`; POST refuses while a live session runs that day, and with a stale `version`), delete a date.
+  `version`; dates outside the semester are refused (`outside_semester`); POST refuses while a live
+  session runs that day, and with a stale `version`; with `absent_profile_ids` it leaves unmarked
+  students alone), delete a date.
   No new live or face sessions for finished semesters (`semester_finished`); roll call and corrections stay. `views/admin.py`: overview,
   semesters (finish/reopen/restore, roster, courses taught, promote), courses, course-info list and
   reassign; older classroom endpoints.
@@ -103,8 +106,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   - Students check in only for themselves (`/sessions/check-in/`), only as current members enrolled
     on the session's date; teachers can only mark such students.
   - `records.py`: reading by day (day status, method, `classes_needed`, student days, the student's
-    semesters summary and course detail); `services.py` also has `correct_attendance` and `roll_call`
-    (change only differing logs, keep their method, record AttendanceChange rows).
+    semesters summary and course detail with each absent day's `absent_reason`); `services.py` also has
+    `correct_attendance` and `roll_call` (change only differing logs, keep their method, record
+    AttendanceChange rows).
 - `apps/hardware/` ESP32 fingerprint devices (`X-Hardware-Key` header auth), enrolment requests.
 - `apps/reports/` export `?format=csv|xlsx|pdf|docx&date=` (`views/reports.py` reads `format` itself:
   DRF would treat it as a renderer). The file name is in `Content-Disposition`; `base.py`'s
@@ -117,7 +121,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   (no `insightface` package). `services.py`: `register_student_faces` (3 poses, one face each, same person,
   duplicate-face block → 409), `recognize_class` (1–3 photos, only enrolled students compared, one face per
   student; present ≥ `FACE_MATCH_THRESHOLD`, unsure ≥ `FACE_UNSURE_THRESHOLD`, `no_face` → unsure; nothing
-  saved), `save_face_attendance` (finished FACE session + logs). `StudentFace` keeps a 112px crop + 512-float
+  saved), `save_face_attendance` (today only; the date's FACE session, reused when saved again: only
+  differing logs change, a change to a corrected log is recorded, `teacher_marked_ids` get method TEACHER,
+  class-group members not enrolled that day are skipped). `StudentFace` keeps a 112px crop + 512-float
   embedding per pose; class photos are never stored. Thresholds are settings (tunable via env). Models are
   non-commercial/academic use only. Tests use a fake engine (`apps/faces/tests/test_faces.py`).
 - `offline_server/` separate FastAPI app for offline QR on the teacher's laptop (calls this API).
@@ -139,8 +145,8 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - Teacher-facing course endpoints must check `can_manage_course` and return `not_your_course_response()`.
 - Times: use `timezone.localdate()` / `timezone.localtime()` (TIME_ZONE is Asia/Dhaka).
 - One class = one date: stats, student summary and exports count a student present on a date if any
-  session that day marked them present (several sessions per day are possible). Saving face attendance
-  again for the same course and date replaces that date's earlier FACE session.
+  session that day marked them present (several sessions per day are possible). Class photo attendance
+  is for today only; saving it again the same day reuses that date's FACE session and deletes nothing.
 
 ## Next
 Tune face thresholds with real classroom photos. Azure Face can be added as another engine in
