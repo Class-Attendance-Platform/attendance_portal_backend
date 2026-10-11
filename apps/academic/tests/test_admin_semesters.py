@@ -624,8 +624,34 @@ class OneCurrentSemesterTests(AdminTestCase):
         StudentClassroom.objects.create(student=self.b, classroom=Classroom.objects.get(semester=self.other))
         self.b.user.deleted = True
         self.b.user.save()
-        res = self.admin.post(f'/api/admin/semesters/{self.current.id}/reopen/')
+        url = f'/api/admin/semesters/{self.current.id}/'
+        res = self.admin.post(f'{url}reopen/')
         self.assertEqual((res.status_code, [s['student_id'] for s in res.data['students']]), (409, [2302002]))
+        # The roster hides deleted accounts, so the message says how to clear them
+        self.assertEqual(res.data['message'], 'Tanvir Hasan (2302002) is now in Level 2 · Term I · 2025-26. '
+                                              'Remove them from this semester before reopening it (account deleted: '
+                                              'restore it on the Students page, remove them, then reopen).')
+        StudentClassroom.objects.create(student=self.a, classroom=Classroom.objects.get(semester=self.other))
+        res = self.admin.post(f'{url}reopen/')
+        self.assertEqual(res.data['message'], '2 students are now in another semester: Ayesha Rahman (2302001), '
+                                              'Tanvir Hasan (2302002, account deleted). Remove them from this '
+                                              'semester before reopening it (account deleted: restore it on the '
+                                              'Students page, remove them, then reopen).')
+        self.a.user.deleted = True
+        self.a.user.save()
+        res = self.admin.post(f'{url}reopen/')
+        self.assertEqual(res.data['message'], '2 students are now in another semester: Ayesha Rahman (2302001, '
+                                              'account deleted), Tanvir Hasan (2302002, account deleted). Remove '
+                                              'them from this semester before reopening it (deleted accounts: '
+                                              'restore them on the Students page, remove them, then reopen).')
+
+        # The way out the message gives
+        for student in (self.a, self.b):
+            self.assertEqual(self.admin.post(f'/api/admin/students/{student.id}/restore/').status_code, 200)
+        res = self.admin.post(f'{url}students/remove/', {'profile_ids': [str(self.a.id), str(self.b.id)]},
+                              format='json')
+        self.assertEqual(res.data['removed'], 2)
+        self.assertEqual(self.admin.post(f'{url}reopen/').status_code, 200)
 
     def test_the_older_classroom_endpoint_follows_the_rule(self):
         classroom = Classroom.objects.get(semester=self.other)
@@ -648,6 +674,16 @@ class OneCurrentSemesterTests(AdminTestCase):
         self.assertEqual(Classroom.objects.get(id=classroom.id).semester_id, old.id)  # not moved
         res = self.admin.put(url, {'name': 'Old group', 'semester': str(old.id)}, format='json')
         self.assertEqual(res.status_code, 200)  # renaming in place is fine
+
+    def test_moving_an_older_class_group_to_a_finished_semester_is_allowed(self):
+        # a is current in the active semester's Main group and in an extra group there
+        lab = Classroom.objects.create(name='Lab', semester=self.current)
+        StudentClassroom.objects.create(student=self.a, classroom=lab)
+        finished = make_semester('First', 'II', '2024-25', is_active=False)
+        res = self.admin.put(f'/api/admin/classrooms/{lab.id}/', {'name': 'Lab', 'semester': str(finished.id)},
+                             format='json')
+        self.assertEqual(res.status_code, 200, res.data)  # a finished semester is never current: no clash
+        self.assertEqual(Classroom.objects.get(id=lab.id).semester_id, finished.id)
 
     def test_importing_into_a_semester_only_adds_new_accounts(self):
         # Students already in the portal are skipped ("exists"), so the import cannot make two

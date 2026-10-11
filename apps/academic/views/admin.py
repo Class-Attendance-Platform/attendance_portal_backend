@@ -48,10 +48,13 @@ def _already_in_semester(memberships, reopening=False):
     """
     409 already_in_semester: a student may be a current member of one active semester only.
     `memberships` = their current memberships in the other semester(s) (one row per student).
+    Reopening also counts deleted accounts, which the roster hides: the message says how to
+    clear them.
     """
     first = {}
     for m in sorted(memberships, key=lambda row: (row.student.student_id, row.classroom.semester.sort_key())):
         first.setdefault(m.student_id, m)
+    rows = list(first.values())
     students = [
         {
             'profile_id': str(m.student_id),
@@ -60,14 +63,18 @@ def _already_in_semester(memberships, reopening=False):
             'semester_id': str(m.classroom.semester_id),
             'semester_label': m.classroom.semester.label,
         }
-        for m in first.values()
+        for m in rows
     ]
-    names = [f"{s['name']} ({s['student_id']})" for s in students]
-    if len(names) == 1:
+    deleted = [reopening and m.student.user.deleted for m in rows]
+    if len(rows) == 1:
         state = 'is now in' if reopening else 'is already in'
-        message = f"{names[0]} {state} {students[0]['semester_label']}."
+        message = f"{students[0]['name']} ({students[0]['student_id']}) {state} {students[0]['semester_label']}."
         fix = 'Remove them from that semester first.'
     else:
+        names = [
+            f"{s['name']} ({s['student_id']}{', account deleted' if gone else ''})"
+            for s, gone in zip(students, deleted)
+        ]
         listed = ', '.join(names[:NAMES_IN_MESSAGE])
         if len(names) > NAMES_IN_MESSAGE:
             listed += f' and {len(names) - NAMES_IN_MESSAGE} more'
@@ -76,6 +83,10 @@ def _already_in_semester(memberships, reopening=False):
         fix = 'Remove them there first.'
     if reopening:
         fix = 'Remove them from this semester before reopening it.'
+        if any(deleted):
+            how = 'account deleted: restore it' if sum(deleted) == 1 else 'deleted accounts: restore them'
+            fix = (f'Remove them from this semester before reopening it ({how} on the Students page, '
+                   'remove them, then reopen).')
     return error_response(f'{message} {fix}', 409, code='already_in_semester', students=students)
 
 
@@ -570,8 +581,9 @@ class ClassroomDetailView(APIView):
             semester = serializer.validated_data.get('semester', classroom.semester)
             try:
                 with transaction.atomic():
-                    if semester.pk != classroom.semester_id:
+                    if semester.pk != classroom.semester_id and semester.is_active:
                         # Its current members move with it: not into a second active semester
+                        # (a finished one is never current, so moving there cannot clash)
                         services.check_one_semester(
                             classroom.memberships.current().values_list('student_id', flat=True),
                             exclude=[semester], moving=classroom,

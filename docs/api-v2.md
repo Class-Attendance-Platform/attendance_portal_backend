@@ -204,7 +204,7 @@ Soft-deleted student accounts are left out of rosters, class lists and counts.
 **One current semester.** A student may be a current member (`left_at` null) of one active
 semester only. Adding students (the roster POST below and the older
 `/admin/classrooms/<id>/students/`), promoting, reopening and moving an older class group to
-another semester (PUT `/admin/classrooms/<id>/`) check it first and change nothing on a
+another active semester (PUT `/admin/classrooms/<id>/`) check it first and change nothing on a
 clash: 409 `code: "already_in_semester"` with `students: [{profile_id, student_id, name,
 semester_id, semester_label}]` (one row per student: the other active semester they are in now)
 and a message naming them: "Ayesha Rahman (2302001) is already in Level 3 · Term I · 2025-26.
@@ -237,7 +237,10 @@ Semester row:
   `level_has_active_semester` if its level has another active semester; 409 `already_in_semester`
   when some of its current members, deleted accounts too, are current members of another active
   semester: "Ayesha Rahman (2302001) is now in Level 4 · Term I · 2025-26. Remove them from this
-  semester before reopening it."), POST
+  semester before reopening it."; the roster hides deleted accounts, so with one among them the
+  message ends "… before reopening it (account deleted: restore it on the Students page, remove
+  them, then reopen)." ("deleted accounts: restore them" for several), and a list of several
+  students marks them "(2302001, account deleted)"), POST
   /admin/semesters/<id>/restore/ (comes back finished; reopen it if needed). Each →
   `{success, message, semester}`; finish/reopen of a deleted semester → 404.
 - Roster: GET /admin/semesters/<id>/students/ →
