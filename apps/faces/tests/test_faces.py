@@ -400,6 +400,21 @@ class ConfirmTests(FaceTestCase):
         self.assertEqual(list(AttendanceChange.objects.filter(log=log).values_list('old_status', 'new_status')),
                          [('PRESENT', 'ABSENT'), ('ABSENT', 'PRESENT')])
 
+    def test_saving_again_records_a_change_to_an_earlier_hand_mark(self):
+        self.confirm([self.s1, self.s2], marked=[self.s2])  # s2 switched to Present by hand
+        hand_marked = self.face_log(self.s2)
+        self.assertEqual((hand_marked.method, hand_marked.changed_by_id), ('TEACHER', None))
+        self.assertFalse(AttendanceChange.objects.exists())
+
+        self.confirm([self.s1])  # a new photo, and s2 is left absent this time
+        hand_marked.refresh_from_db()
+        self.assertEqual((hand_marked.status, hand_marked.method, hand_marked.changed_by_id),
+                         ('ABSENT', '', self.teacher.user.id))
+        self.assertEqual(list(AttendanceChange.objects.values_list('log', 'old_status', 'new_status', 'changed_by')),
+                         [(hand_marked.id, 'PRESENT', 'ABSENT', self.teacher.user.id)])
+        [day] = client_for(self.s2.user).get(f'/api/student/course-info/{self.ci.id}/').data['days']
+        self.assertEqual((day['status'], day['changed'], day['absent_reason']), ('ABSENT', True, 'changed'))
+
     def test_a_student_added_after_the_first_save_gets_a_log(self):
         self.confirm([self.s1])
         newcomer = make_student('s5@example.com', 2302005)
