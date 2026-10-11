@@ -75,8 +75,10 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   rows: history), CourseInfo (course + teacher + semester + classroom = one taught class).
   `services.py`: `main_classroom`, `create_semester`, `join_date` (null before the semester's first
   class, else today), `leave_date` (today, or tomorrow when the class group held or holds a class
-  today), `add_members`/`remove_members` (a student is current in one active semester at most:
-  `already_in_semester`), `promote` (finishes the source). On the join day only
+  today), `add_members`/`remove_members`, `check_one_semester` (a student is current in one active
+  semester at most, 409 `already_in_semester`: the admin views that add, reopen or move a class
+  group call it, and so does `promote`; `add_members` itself does not check), `promote` (finishes
+  the source). On the join day only
   classes that logged the student count (`StudentClassroom.counts_on`). `stats.py`:
   `course_numbers()` (held/attended/percent per student inside their membership, percentages rounded
   down to 0.1, class count, average, below-min) and `semester_numbers()`. Command `backfill_join_dates` (dry run, `--apply`):
