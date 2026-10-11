@@ -427,7 +427,8 @@ student (one date = one class: PRESENT if any log that day says so; method/chang
 log; on an absent day from the log a teacher changed last, else its first log), by student id.
 `?date=YYYY-MM-DD` and `?student_id=<profile_id>` narrow it (bad values →
 400). In `days` and `logs`, `method` is how the student was marked present: QR, CODE, FACE, TEACHER
-(roll call or correction-created logs: either status), or null (absent in a live/face session).
+(roll call or correction-created logs: either status; also a live session's "Mark present" and a
+class photo's hand marks, section 8), or null (absent in a live/face session).
 It follows the day's status (corrections keep the stored method): an absent day shows only
 TEACHER or null (a QR check-in corrected to absent shows null); a present day whose log had no
 method (absent in a live/face session, then corrected) shows TEACHER.
@@ -541,12 +542,14 @@ without a log for them. The app's words: "Marked absent by teacher", "Marked abs
   ("Marked by teacher"); everyone else enrolled that day is absent (method ""). **Saving again the
   same day deletes nothing**: the date's FACE session is reused (created if missing) and only logs
   whose status differs change (status, method, time); students without a log in it get one. When
-  such a log had been changed by a teacher before (a correction or a roll call change), the change
-  is recorded like a correction (AttendanceChange old → new, `changed_by` = this teacher, the log's
-  `changed_by` / `changed_at` updated). Ids of students in the course's class group who are not
-  enrolled that day or whose account is deleted (e.g. removed while the teacher reviewed) are
-  skipped and listed in `skipped` (always present, maybe empty; by student id); an id never in the
-  class group → 400 ("Some selected students are not in this course."), nothing saved.
+  such a log was set by a teacher before (a correction or a roll call change, or method TEACHER: a
+  hand mark in an earlier review of that day), the change is recorded like a correction
+  (AttendanceChange old → new, `changed_by` = this teacher, the log's `changed_by` / `changed_at`
+  updated); a change of a plain photo result is not recorded. Ids of students in the course's
+  class group who are not enrolled that day or whose account is deleted (e.g. removed while the
+  teacher reviewed) are skipped and listed in `skipped` (always present, maybe empty; by student
+  id); an id never in the class group → 400 ("Some selected students are not in this course."),
+  nothing saved.
   `total_present` = the session's present students (deleted accounts not counted).
 - GET /reports/course-info/<id>/export/?format=pdf|xlsx|csv|docx&date=YYYY-MM-DD (exists).
   Fixes: generated time in Asia/Dhaka; join dates respected (not enrolled = blank, not absent); the

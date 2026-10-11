@@ -253,7 +253,8 @@ def save_face_attendance(course_info, present_ids, day=None, user=None, teacher_
     with method FACE, or TEACHER for `teacher_marked_ids` (switched to present by hand), everyone
     else enrolled that day absent. Saving again the same day reuses that session and deletes
     nothing: only logs whose status differs change (status, method, time), and when such a log
-    had been corrected by a teacher, the change is recorded like a correction by `user`.
+    was set by a teacher before (a correction or roll call change, or method TEACHER: e.g. a
+    hand mark in an earlier review), the change is recorded like a correction by `user`.
     Present ids of class group members who are not enrolled that day (they left, joined later,
     or their account was deleted while the teacher reviewed) are skipped: the returned session's
     `skipped` lists them as [{profile_id, name}]. An id never in the class group raises FaceError.
@@ -305,7 +306,8 @@ def save_face_attendance(course_info, present_ids, day=None, user=None, teacher_
                     time=time_now, source=AttendanceLog.Source.FACE, status=status, method=method,
                 ))
             elif log.status != status:
-                if log.changed_by_id or log.changed_at:  # a teacher changed it before: keep the trail going
+                # A teacher set it before (a correction, or a hand mark): keep the trail going
+                if log.changed_by_id or log.changed_at or log.method == AttendanceLog.Method.TEACHER:
                     changes.append(_change(log, status, user, now))
                 log.status, log.method, log.time = status, method, time_now
                 changed_logs.append(log)
