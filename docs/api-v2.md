@@ -279,7 +279,8 @@ Semester row:
   and adds them to the target like a roster add,
   updates their profile level/term, **finishes the source semester** (never deletes). 200
   `{success, message, target_semester_id, moved}`. `profile_ids` must be current members (400
-  otherwise); deleted accounts are not moved; target = source → 400; a moved student who is also
+  otherwise); deleted accounts are not moved; target = source → 400; a finished target (chosen or
+  reused by `target`) → 400 `semester_finished` (reopen it first; nothing changes); a moved student who is also
   a current member of a third active semester → 409 `already_in_semester` (nothing changes). The old
   `/admin/classrooms/<id>/promote/` stays but is unused.
 

@@ -417,6 +417,11 @@ class SemesterPromoteView(APIView):
                     return validation_error_response(
                         {'target_semester_id': ['Choose a different semester to move the students to.']},
                     )
+                if not target.is_active:  # they would be left without an active semester
+                    return error_response(
+                        f'{target.label} is finished. Reopen it first, or choose another semester.',
+                        400, code='semester_finished',
+                    )
                 moved = services.promote(source, target, profile_ids)
         except services.AlreadyInSemester as clash:  # in a third active semester: nothing changed
             return _already_in_semester(clash.memberships)
