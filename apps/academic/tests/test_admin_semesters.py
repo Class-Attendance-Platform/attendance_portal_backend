@@ -440,6 +440,21 @@ class PromoteTests(AdminTestCase):
         self.assertEqual((res.status_code, res.data['target_semester_id']), (200, str(target.id)))
         self.assertEqual(Semester.objects.count(), 2)
 
+    def test_a_finished_target_is_refused(self):
+        finished = make_semester('Fourth', 'I', '2025-26', is_active=False)
+        for body in ({'target_semester_id': str(finished.id)},
+                     {'target': {'level': 'Fourth', 'semester': 'I', 'session': '2025-26'}}):  # reused by match
+            res = self.promote(**body)
+            self.assertEqual((res.status_code, res.data['code']), (400, 'semester_finished'), body)
+            self.assertEqual(res.data['message'],
+                             'Level 4 · Term I · 2025-26 is finished. Reopen it first, or choose another semester.')
+        self.source.refresh_from_db()
+        self.assertTrue(self.source.is_active)  # nothing happened
+        self.assertFalse(StudentClassroom.objects.filter(classroom__semester=finished).exists())
+        self.assertFalse(StudentClassroom.objects.filter(left_at=self.today).exists())
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.current_level, 'Third')
+
     def test_bad_requests(self):
         other_level = make_semester('Fourth', 'I', '2024-25')
         cases = [
