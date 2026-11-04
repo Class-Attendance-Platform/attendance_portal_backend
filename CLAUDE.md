@@ -49,10 +49,13 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 ## Code map
 - `config/settings/` `base.py` (Postgres + Redis from `.env` via python-decouple), `development.py`
   (default), `production.py` (server: env `ALLOWED_HOSTS`/`CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS`,
-  whitenoise for admin static files, HTTPS via nginx's `X-Forwarded-Proto`), `test.py`. `.env.example`
-  lists the server's `.env` keys (also email, `WEB_URL`, app versions, throttle rates).
-  `config/urls.py` mounts every app under `/api/` (JSON 404/500). `config/errors.py`: exception
+  whitenoise for DRF's static files, HTTPS via nginx's `X-Forwarded-Proto`, HSTS on by default), `test.py`.
+  `.env.example` lists the server's `.env` keys (also email, `WEB_URL`, app versions, throttle rates).
+  `config/urls.py` mounts every app under `/api/` (JSON 404/500); there is no Django admin site
+  (`/admin/` is 404 on purpose: the app's admin pages replace it). `config/errors.py`: exception
   handler + `error_response()` / `validation_error_response()` (every error has a readable `message`).
+  `config/parsers.py`: the default JSON parser accepts only an object (a list or plain value → 400
+  `parse_error` before any view reads `request.data`).
 - API contract for the redesign: `docs/api-v2.md` (source of truth; change it with the code).
 - `apps/users/` User (UUID pk, email login, `role` STUDENT/TEACHER/ADMIN), Student/Teacher/AdminProfile,
   DeviceBinding. Sign-up waits for admin approval (`is_verified`; admins never wait). Commands:
@@ -62,10 +65,17 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   tokens, then deletes; refuses the last active admin), `cleanup_broken_signups` (accounts without a
   profile; dry run, `--apply`). `permissions.py`: role classes + `can_manage_course(user, course_info)`
   (admin, or the course's own teacher) + `not_your_course_response()`. `throttles.py` (login and register per IP +
-  email with a wide per-IP cap; password forgot per IP; check-in and face registration per user). `services.py` (tokens,
-  blocking tokens, reset emails, temporary passwords). `jwt.py`: tokens carry a password fingerprint
+  a digest of the email, with a wide per-IP cap; password forgot per IP; password change, check-in and face
+  registration per user). `services.py` (tokens, blocking tokens, reset emails: one per account in 15 min,
+  sent in a background thread (`SEND_EMAIL_IN_BACKGROUND`, off in tests), temporary passwords).
+  `serializers.py`: names refuse control characters (`no_control_characters`; they broke the xlsx/docx
+  exports); the admin's "already exists" errors name a deleted account (`taken()`), public sign-up never.
+  `jwt.py`: tokens carry a password fingerprint
   (`CHECK_REVOKE_TOKEN`): a password change/reset ends other devices' access tokens at once; the refresh
-  serializer gives older refresh tokens the fingerprint. `importing.py` (admin CSV/XLSX student import). Views: `auth` (login, register,
+  serializer gives older refresh tokens the fingerprint, and a blacklisted one with an outdated fingerprint
+  answers `password_changed`. `importing.py` (admin CSV/XLSX student import; CSV as UTF-8, else
+  Windows-1252). Reject refuses an account approved meanwhile (409 `already_approved`); approve and reject
+  write only if the account is still as they read it (conditional updates). Views: `auth` (login, register,
   logout, me, password change/forgot/reset), `admin` (approvals, students/teachers with partial PATCH,
   restore, import), `student` (semesters summary), `config` (`app/` settings + enum lists).
 - `apps/academic/` Semester (`session`, `label`, `sort_semesters()`), Course, Classroom (one hidden
@@ -117,7 +127,8 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   `CORS_EXPOSE_HEADERS` lets the web app (another origin) read it. `generators.py`: `build_report()`
   (class list, one column per class date, blank outside a student's membership, numbers from
   `course_numbers()`, Dhaka time); PDF/DOCX split the dates into page-wide parts (`date_chunks()`)
-  that repeat ID, name and %.
+  that repeat ID, name and %. `clean_text()` drops characters XML cannot hold from every stored text,
+  and the file name keeps only letters, digits, `-` and `_`.
 - `apps/faces/` face attendance (`/api/faces/`). `engines/`: `get_engine()` picks `settings.FACE_ENGINE`;
   `insightface_onnx.py` runs InsightFace buffalo_l (SCRFD detector + ArcFace) with onnxruntime + OpenCV
   (no `insightface` package). `services.py`: `register_student_faces` (3 poses, one face each, same person,
@@ -132,7 +143,9 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 - Tests: `apps/*/tests/`; factories in `apps/attendance/tests/helpers.py`. CI: `.github/workflows/tests.yml`
   (Python 3.14 like the server; checks, migrations check, tests).
 - `deploy/` server files: `attendanceportal-api.service` (systemd, gunicorn on a unix socket as its
-  own user `attendanceportal`, group www-data for nginx; only it can read `.env`), `nginx/` (API proxy with 32 MB uploads; static web app with SPA fallback), `README.md`
+  own user `attendanceportal`, group www-data for nginx; only it can read `.env`),
+  `attendanceportal-flush-tokens.service`/`.timer` (daily `flushexpiredtokens`, 03:30 Dhaka), `nginx/` (API
+  proxy with 32 MB uploads; static web app with SPA fallback and HSTS), `README.md`
   (one command per block: database + Neon copy, backend, web build, nginx/certbot, app releases).
 
 ## Conventions

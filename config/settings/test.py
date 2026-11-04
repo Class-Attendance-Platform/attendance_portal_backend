@@ -41,4 +41,5 @@ EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
 EMAIL_HOST_USER = 'portal@example.com'
 EMAIL_HOST_PASSWORD = ''
 DEFAULT_FROM_EMAIL = 'HSTU Attendance Portal <portal@example.com>'
+SEND_EMAIL_IN_BACKGROUND = False  # tests read django.core.mail.outbox right after the request
 WEB_URL = 'http://localhost:8081'

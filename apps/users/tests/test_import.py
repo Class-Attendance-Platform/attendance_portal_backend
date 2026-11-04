@@ -196,6 +196,38 @@ class ImportTests(TestCase):
         res = client_for(teacher.user).post(URL, {'file': upload('students.csv', CSV)}, format='multipart')
         self.assertEqual(res.status_code, 403)
 
+    def test_a_finished_semester_is_refused_as_promote_does(self):
+        semester = Semester.objects.create(level='Third', semester='I', session='2025-26', is_active=False)
+        before = User.objects.count()
+        for apply in ('false', 'true'):
+            res = self.post(upload('students.csv', CSV), apply=apply, semester_id=str(semester.id))
+            self.assertEqual((res.status_code, res.data['code']), (400, 'semester_finished'))
+            self.assertEqual(res.data['message'],
+                             'Level 3 · Term I · 2025-26 is finished. Reopen it first, or choose another semester.')
+        self.assertEqual(User.objects.count(), before)  # nothing created
+
+    def test_excel_plain_csv_is_read_as_windows_1252(self):
+        content = 'student_id,name,email,level,term\n2302301,Mim O’Brien,mim@example.com,First,I\n'
+        res = self.post(upload('students.csv', content.encode('cp1252')), apply='true')
+        self.assertEqual(res.data['rows'][0]['name'], 'Mim O’Brien')
+        self.assertEqual(User.objects.get(email='mim@example.com').last_name, 'O’Brien')
+
+    def test_a_name_with_a_control_character_is_a_row_error(self):
+        content = 'student_id,first_name,last_name,email,level,term\n2302301,Mim,Akter\x07,mim@example.com,First,I\n'
+        res = self.post(upload('students.csv', content), apply='true')
+        self.assertEqual(res.data['summary'], {'create': 0, 'exists': 0, 'error': 1})
+        self.assertEqual(res.data['rows'][0]['errors'], ['Name contains a hidden control character.'])
+        self.assertFalse(User.objects.filter(email='mim@example.com').exists())
+
+    def test_an_existing_row_of_a_deleted_account_says_to_restore_it(self):
+        User.objects.filter(email='existing@example.com').update(deleted=True, is_active=False)
+        res = self.post(upload('students.csv', CSV))
+        rows = {row['email']: row for row in res.data['rows']}
+        hint = 'It belongs to a deleted account: restore it on the Students page (Status: Deleted).'
+        self.assertEqual((rows['existing@example.com']['status'], rows['existing@example.com']['errors']),
+                         ('exists', [hint]))
+        self.assertEqual(rows['someone@example.com']['errors'], [])  # its student id is an active account's
+
 
 class TemporaryPasswordTests(TestCase):
     def test_shape(self):

@@ -15,6 +15,7 @@ UTF-8 with a byte order mark). Percentages have one decimal, rounded down (stats
 """
 import csv
 import io
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from xml.sax.saxutils import escape
@@ -140,6 +141,15 @@ def percent_text(value) -> str:
     return '-' if value is None else f'{value}%'
 
 
+# Characters an XML file (.xlsx, .docx) cannot hold: one in a stored name would break the export.
+XML_ILLEGAL = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
+
+
+def clean_text(value) -> str:
+    """Stored text (names, emails, course titles) without the characters XML cannot hold."""
+    return XML_ILLEGAL.sub('', str(value))
+
+
 def spreadsheet_text(value) -> str:
     """Text people typed (names), safe for Excel: a leading = + - @ would start a formula."""
     value = str(value)
@@ -160,12 +170,12 @@ def build_report(course_info, filter_date=None) -> Report:
     )
 
     report = Report(
-        course_code=course_info.course.code,
-        course_title=course_info.course.title,
-        semester_label=course_info.semester.label,
+        course_code=clean_text(course_info.course.code),
+        course_title=clean_text(course_info.course.title),
+        semester_label=clean_text(course_info.semester.label),
         semester_active=course_info.semester.is_active,
         department=f'{FACULTY_NAME} ({DEPARTMENT_NAME})',
-        teacher=person_name(course_info.teacher.user) if course_info.teacher_id else 'Not assigned',
+        teacher=clean_text(person_name(course_info.teacher.user)) if course_info.teacher_id else 'Not assigned',
         generated_at=timezone.localtime(),
         filter_date=filter_date,
         dates=[filter_date] if filter_date else class_dates,
@@ -182,8 +192,8 @@ def build_report(course_info, filter_date=None) -> Report:
                 cells.append(PRESENT if (profile_id, day) in present else ABSENT)
         user = membership.student.user
         report.rows.append(ReportRow(
-            number=number, student_id=membership.student.student_id, name=person_name(user),
-            email=user.email, cells=cells, held=n.held, attended=n.attended, percent=n.percent,
+            number=number, student_id=membership.student.student_id, name=clean_text(person_name(user)),
+            email=clean_text(user.email), cells=cells, held=n.held, attended=n.attended, percent=n.percent,
             below_min=n.below_min,
         ))
     return report
@@ -569,7 +579,8 @@ def _docx_row(table, values, widths_cm, left_columns=()):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _filename(course_info, filter_date, ext):
-    code = course_info.course.code.replace(' ', '_')
+    # Only safe characters: a quote or a control character in a code would break the header.
+    code = re.sub(r'[^A-Za-z0-9_-]+', '_', course_info.course.code).strip('_') or 'course'
     if filter_date:
         return f'{code}_attendance_{filter_date}.{ext}'
     return f'{code}_attendance_full.{ext}'

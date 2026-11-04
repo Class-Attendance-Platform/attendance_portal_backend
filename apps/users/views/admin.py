@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.db.models import CharField, Count, Exists, OuterRef, Q
 from django.db.models.functions import Cast
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -81,12 +82,21 @@ class VerifyUserView(APIView):
 
     def post(self, request, uuid):
         user = get_object_or_404(User, id=uuid, deleted=False)
-        if not user.is_verified:
-            user.is_verified = True
-            user.save(update_fields=['is_verified'])
+        # Written only if not rejected meanwhile: a Reject that lands after this read wins.
+        if not user.is_verified and not User.objects.filter(pk=user.pk, deleted=False).update(is_verified=True):
+            raise Http404
         return Response({'success': True, 'message': f'{user.email} approved.'})
 
     patch = post
+
+
+def _approved_meanwhile(user):
+    """409: approved by another admin or tab after this list loaded; the account is in use."""
+    page = 'Teachers' if user.role == User.Role.TEACHER else 'Students'
+    return error_response(
+        f'{user.email} was approved meanwhile. To remove the account, delete it on the {page} page.',
+        409, code='already_approved',
+    )
 
 
 class RejectUserView(APIView):
@@ -95,7 +105,15 @@ class RejectUserView(APIView):
 
     def post(self, request, uuid):
         user = get_object_or_404(User, id=uuid, deleted=False, role__in=SIGN_UP_ROLES)
-        deactivate_user(user)
+        if user.is_verified:
+            return _approved_meanwhile(user)
+        # Written only while still waiting: an Approve that lands after this read wins.
+        if not User.objects.filter(pk=user.pk, is_verified=False, deleted=False).update(deleted=True, is_active=False):
+            user.refresh_from_db(fields=['is_verified', 'deleted'])
+            if user.deleted:
+                raise Http404  # rejected meanwhile: as for any later request
+            return _approved_meanwhile(user)
+        blacklist_refresh_tokens(user)  # as deactivate_user does
         StudentFace.objects.filter(student__user=user).delete()  # biometric data goes with the account
         return Response({'success': True, 'message': f'{user.email} rejected.'})
 
@@ -248,6 +266,11 @@ class AdminStudentImportView(APIView):
                 semester = Semester.objects.get(id=uuid_lib.UUID(semester_id), deleted=False)
             except (ValueError, Semester.DoesNotExist):
                 return validation_error_response({'semester_id': ['This semester was not found.']})
+            if not semester.is_active:  # as Promote: new students would join no active semester
+                return error_response(
+                    f'{semester.label} is finished. Reopen it first, or choose another semester.',
+                    400, code='semester_finished',
+                )
 
         try:
             rows, to_create = plan_import(read_table(upload))

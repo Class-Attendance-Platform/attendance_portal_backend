@@ -1,3 +1,4 @@
+from unittest import mock
 from urllib.parse import parse_qs, urlparse
 
 from django.core import mail
@@ -8,7 +9,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.attendance.tests.helpers import PASSWORD, client_for, make_admin, make_student, make_teacher
 from apps.users.models import User
-from apps.users.services import password_reset_link
+from apps.users.services import password_reset_link, send_password_reset_email
 
 NEW_PASSWORD = 'Brand-new-pass-77'
 
@@ -156,6 +157,18 @@ class MeTests(AuthTestCase):
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.data['message'], 'First name is required.')
 
+    def test_a_name_with_a_control_character_is_refused(self):
+        """An invisible bell or tab in a name would break the course's Excel and Word exports."""
+        for name in ('Kh\x07an', 'Kh\tan', 'Kh\x85an'):  # at the ends they would be trimmed as spaces
+            res = client_for(self.student.user).patch('/api/auth/me/', {'last_name': name}, format='json')
+            self.assertEqual(res.status_code, 400, repr(name))
+            self.assertEqual(res.data['errors']['last_name'],
+                             ['This name contains a hidden control character. Type it again without it.'])
+        self.assertEqual(User.objects.get(pk=self.student.user.pk).last_name, 'Rahman')
+        # Letters from any language are fine
+        res = client_for(self.student.user).patch('/api/auth/me/', {'last_name': 'রহমান'}, format='json')
+        self.assertEqual(res.status_code, 200)
+
 
 class PasswordChangeTests(AuthTestCase):
     def change(self, client, current, new):
@@ -187,6 +200,17 @@ class PasswordChangeTests(AuthTestCase):
         self.assertEqual(self.refresh(res.data['tokens']['refresh']).status_code, 200)
         self.assertEqual(self.login(password=NEW_PASSWORD).status_code, 200)
         self.assertEqual(self.login(password=PASSWORD).status_code, 401)
+
+    def test_10_tries_an_hour(self):
+        client = client_for(self.student.user)
+        for _ in range(10):  # guessing the current password from a session left open
+            self.assertEqual(self.change(client, 'wrong-pass', NEW_PASSWORD).status_code, 400)
+        res = self.change(client, PASSWORD, NEW_PASSWORD)  # even the right one, until the hour is over
+        self.assertEqual((res.status_code, res.data['code']), (429, 'throttled'))
+        self.assertEqual(self.login().status_code, 200)  # unchanged
+        # Counted per user: someone else is not blocked
+        other = make_student('other@example.com', 2302002)
+        self.assertEqual(self.change(client_for(other.user), PASSWORD, NEW_PASSWORD).status_code, 200)
 
 
 class PasswordForgotTests(AuthTestCase):
@@ -228,6 +252,39 @@ class PasswordForgotTests(AuthTestCase):
         res = self.forgot('not-an-email')
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.data['message'], 'Enter a valid email address.')
+
+    def test_one_email_per_account_in_15_minutes(self):
+        for address in ('10.0.0.1', '10.0.0.2', '10.0.0.3'):  # tries from several addresses
+            res = self.client.post('/api/auth/password/forgot/', {'email': 'student@example.com'},
+                                   format='json', REMOTE_ADDR=address)
+            self.assertEqual(res.data['message'],
+                             'If an account exists for this email, we sent a link to reset the password.')
+        self.assertEqual(len(mail.outbox), 1)
+        make_student('second@example.com', 2302002)
+        self.forgot('second@example.com')  # counted per account
+        self.assertEqual(len(mail.outbox), 2)
+        cache.clear()  # the 15 minutes are over
+        self.forgot('student@example.com')
+        self.assertEqual(len(mail.outbox), 3)
+
+    def test_a_failed_email_does_not_block_the_next_try(self):
+        """Gmail timed out: nothing went out, so the 15 minutes do not start."""
+        with mock.patch('apps.users.services.send_mail', side_effect=TimeoutError('smtp')), \
+                self.assertLogs('apps.users.services', 'ERROR'):
+            self.assertEqual(self.forgot('student@example.com').status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+        self.client.post('/api/auth/password/forgot/', {'email': 'student@example.com'}, format='json',
+                         REMOTE_ADDR='10.0.0.7')
+        self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(SEND_EMAIL_IN_BACKGROUND=True)
+    def test_the_email_goes_out_after_the_answer(self):
+        with mock.patch('apps.users.services.threading.Thread') as thread:
+            self.assertEqual(self.forgot('student@example.com').status_code, 200)
+        self.assertEqual(thread.call_args.kwargs['target'], send_password_reset_email)
+        self.assertEqual(thread.call_args.kwargs['args'][0].email, 'student@example.com')
+        thread.return_value.start.assert_called_once()
+        self.assertEqual(len(mail.outbox), 0)  # not sent inside the request
 
 
 class PasswordResetTests(AuthTestCase):
@@ -293,7 +350,8 @@ class OldAccessTokensStopAfterAPasswordChangeTests(AuthTestCase):
         )
         self.assertEqual(res.status_code, 200)
         self.assert_refused(self.me(other['access']))
-        self.assertEqual(self.refresh(other['refresh']).status_code, 401)
+        # The change blacklisted the other device's refresh token; it still says why
+        self.assert_refused(self.refresh(other['refresh']))
         # The device that changed it goes on with the fresh pair
         self.assertEqual(self.me(res.data['tokens']['access']).status_code, 200)
         self.assertEqual(self.refresh(res.data['tokens']['refresh']).status_code, 200)
@@ -307,7 +365,7 @@ class OldAccessTokensStopAfterAPasswordChangeTests(AuthTestCase):
         }, format='json')
         self.assertEqual(res.status_code, 200)
         self.assert_refused(self.me(other['access']))
-        self.assertEqual(self.refresh(other['refresh']).status_code, 401)
+        self.assert_refused(self.refresh(other['refresh']))
 
     def test_admin_reset_ends_old_access_tokens(self):
         other = self.login().data
@@ -316,8 +374,21 @@ class OldAccessTokensStopAfterAPasswordChangeTests(AuthTestCase):
                          {'new_password': NEW_PASSWORD}, format='json')
         self.assertEqual(res.status_code, 200)
         self.assert_refused(self.me(other['access']))
-        self.assertEqual(self.refresh(other['refresh']).status_code, 401)
+        self.assert_refused(self.refresh(other['refresh']))
         self.assertEqual(self.me(self.login(password=NEW_PASSWORD).data['access']).status_code, 200)
+
+    def test_other_blacklisted_tokens_are_still_just_not_valid(self):
+        """Used once already (rotation) or signed out: the password is the same, so no "changed"."""
+        pair = self.login().data
+        self.assertEqual(self.refresh(pair['refresh']).status_code, 200)
+        res = self.refresh(pair['refresh'])  # the old one again
+        self.assertEqual((res.status_code, res.data['code']), (401, 'token_not_valid'))
+
+        signed_out = self.login().data
+        client_for(self.student.user).post('/api/auth/logout/', {'refresh': signed_out['refresh']}, format='json')
+        self.assertEqual(self.refresh(signed_out['refresh']).data['code'], 'token_not_valid')
+        # A made-up token is not valid either, whatever its claims say
+        self.assertEqual(self.refresh('not-a-token').data['code'], 'token_not_valid')
 
     def test_tokens_from_before_the_switch_keep_working_after_one_refresh(self):
         # A pair made without the fingerprint (as before CHECK_REVOKE_TOKEN was on)

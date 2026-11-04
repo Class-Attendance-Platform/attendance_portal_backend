@@ -71,6 +71,11 @@ class ErrorResponseTests(TestCase):
     def test_unknown_address(self):
         self.assert_error(APIClient().get('/api/no-such-thing/'), 404, 'This address does not exist.')
 
+    def test_there_is_no_django_admin_site(self):
+        """An open /admin/ login would be a password-guessing route outside the API's limits."""
+        for path in ('/admin/', '/admin/login/'):
+            self.assert_error(APIClient().get(path), 404, 'This address does not exist.')
+
     def test_method_not_allowed(self):
         admin = make_admin('admin@example.com')
         body = self.assert_error(client_for(admin).put('/api/admin/students/'), 405)

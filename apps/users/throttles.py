@@ -4,6 +4,7 @@ DEFAULT_THROTTLE_RATES, overridable from .env); counts are kept in the cache (Re
 When the cache cannot be reached the limits are skipped (logged), so signing in never
 depends on Redis.
 """
+import hashlib
 import logging
 
 from rest_framework.throttling import SimpleRateThrottle, UserRateThrottle
@@ -37,8 +38,13 @@ class IPAndEmailRateThrottle(IPRateThrottle):
     """
 
     def get_cache_key(self, request, view):
-        email = str(request.data.get('email', '') if hasattr(request, 'data') else '').strip().lower()
-        return self.cache_format % {'scope': self.scope, 'ident': f'{self.get_ident(request)}:{email}'}
+        data = getattr(request, 'data', None)
+        # upper() first, as the database matches emails (UPPER(email) = UPPER(%s)): 'ſ' and 'ı'
+        # would otherwise make separate counts for the same account.
+        email = str(data.get('email', '') if isinstance(data, dict) else '').strip().upper().lower()
+        # A digest, not the email itself: a huge made-up email must not become a huge Redis key.
+        digest = hashlib.sha256(email.encode('utf-8', 'surrogatepass')).hexdigest()[:32]
+        return self.cache_format % {'scope': self.scope, 'ident': f'{self.get_ident(request)}:{digest}'}
 
 
 class LoginThrottle(IPAndEmailRateThrottle):
@@ -66,6 +72,11 @@ class RegisterIPThrottle(IPRateThrottle):
 
 class PasswordForgotThrottle(IPRateThrottle):
     scope = 'password_forgot'
+
+
+class PasswordChangeThrottle(FailOpenMixin, UserRateThrottle):
+    """Per signed-in user: someone at a session left open cannot keep guessing the current password."""
+    scope = 'password_change'
 
 
 class CheckInThrottle(FailOpenMixin, UserRateThrottle):

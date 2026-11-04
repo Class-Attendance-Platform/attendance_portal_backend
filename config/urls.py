@@ -1,8 +1,8 @@
-from django.contrib import admin
 from django.urls import path, include
 
+# No Django admin site: the app has its own admin pages, and an open /admin/ login would be a
+# password-guessing route outside the API's sign-in limits.
 urlpatterns = [
-    path('admin/', admin.site.urls),
     path('api/auth/', include('apps.users.urls.auth')),
     path('api/config/', include('apps.users.urls.config')),
     path('api/admin/', include('apps.users.urls.admin')),

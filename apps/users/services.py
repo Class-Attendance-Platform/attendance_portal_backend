@@ -2,10 +2,12 @@
 import logging
 import secrets
 import string
+import threading
 
 from django.conf import settings
 from django.contrib.auth.hashers import PBKDF2PasswordHasher, get_hasher, make_password
 from django.contrib.auth.tokens import default_token_generator
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import transaction
@@ -124,6 +126,10 @@ def password_reset_link(user) -> str:
     return f'{settings.WEB_URL}/reset-password?uid={uid}&token={token}'
 
 
+def _reset_sent_key(user) -> str:
+    return f'password_reset_sent:{user.pk}'
+
+
 def send_password_reset_email(user) -> bool:
     link = password_reset_link(user)
     name = user.get_full_name() or user.email
@@ -138,8 +144,32 @@ def send_password_reset_email(user) -> bool:
         send_mail(f'Reset your {APP_NAME} password', body, settings.DEFAULT_FROM_EMAIL, [user.email])
     except Exception:
         logger.exception('Could not send the password reset email')
+        try:
+            cache.delete(_reset_sent_key(user))  # nothing went out: the next request may send again
+        except Exception:
+            logger.exception('Could not clear the reset email interval')
         return False
     return True
+
+
+def send_password_reset_email_once(user):
+    """
+    Sends the reset email unless this account got one in the last PASSWORD_RESET_EMAIL_INTERVAL
+    seconds (tries from many addresses would flood the inbox and use up the Gmail quota). It goes
+    out in the background, so the answer takes as long whether or not the email has an account.
+    """
+    try:
+        # Taken before sending, so parallel requests send one email; a failed send gives it back.
+        first = cache.add(_reset_sent_key(user), 1, settings.PASSWORD_RESET_EMAIL_INTERVAL)
+    except Exception:  # cache unreachable: send anyway, as the request limits do
+        logger.exception('Reset email interval skipped: the cache is unreachable')
+        first = True
+    if not first:
+        return
+    if settings.SEND_EMAIL_IN_BACKGROUND:
+        threading.Thread(target=send_password_reset_email, args=(user,), daemon=True).start()
+    else:
+        send_password_reset_email(user)
 
 
 def user_from_reset_link(uid, token):
