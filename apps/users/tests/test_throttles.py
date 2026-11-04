@@ -98,6 +98,29 @@ class ThrottleTests(TestCase):
         self.assert_throttled(first.post(url, body, format='json'))
         self.assertEqual(second.post(url, body, format='json').status_code, 410)
 
+    def test_lookalike_letters_share_one_count(self):
+        """'ſ' and 'ı' find the same account in the database (UPPER), so they count with it."""
+        client = APIClient()
+        for _ in range(10):
+            client.post('/api/auth/login/', {'email': 'student@example.com', 'password': 'wrong'}, format='json')
+        for email in ('ſtudent@example.com', 'student@example.com'.replace('i', 'ı')):
+            self.assert_throttled(client.post('/api/auth/login/', {'email': email, 'password': 'wrong'}, format='json'))
+
+    def test_a_huge_made_up_email_never_becomes_a_huge_cache_key(self):
+        """Redis also holds the live check-ins: a 1 MB email must not be stored as a 1 MB key."""
+        huge = f'{"x" * 1_000_000}@example.com'
+        client = APIClient()
+        client.post('/api/auth/register/', {'role': 'STUDENT', 'email': huge, 'password': 'p'}, format='json')
+        client.post('/api/auth/login/', {'email': huge, 'password': 'p'}, format='json')
+        keys = list(cache._cache)  # LocMemCache's own store
+        self.assertTrue(keys)
+        self.assertLess(max(len(key) for key in keys), 200)
+        # Still one count per email: capitals and spaces don't make a new one
+        for _ in range(9):
+            client.post('/api/auth/login/', {'email': huge, 'password': 'p'}, format='json')
+        self.assert_throttled(client.post('/api/auth/login/', {'email': f' {huge.upper()} ', 'password': 'p'},
+                                          format='json'))
+
     def test_requests_go_through_when_the_cache_is_down(self):
         down = mock.Mock(get=mock.Mock(side_effect=ConnectionError('Redis is down')))
         client = APIClient()

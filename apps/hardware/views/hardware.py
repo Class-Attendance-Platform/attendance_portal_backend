@@ -34,7 +34,8 @@ class HardwareDeviceListCreateView(APIView):
         return Response({'success': True, 'devices': HardwareDeviceSerializer(devices, many=True).data})
 
     def post(self, request):
-        name = request.data.get('device_name', '').strip()
+        name = request.data.get('device_name')
+        name = name.strip() if isinstance(name, str) else ''
         if not name:
             return Response({'success': False, 'message': 'device_name is required.'}, status=400)
 

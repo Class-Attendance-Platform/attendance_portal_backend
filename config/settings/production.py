@@ -15,7 +15,7 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
 # Origin header and the desktop app loads the web app, so they need nothing here.
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')  # for /admin/
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')  # Django forms (none mounted now)
 
 # nginx terminates HTTPS and forwards the original scheme
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -24,9 +24,11 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 REST_FRAMEWORK = {**REST_FRAMEWORK, 'NUM_PROXIES': config('NUM_PROXIES', default=1, cast=int)}
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
-SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=0, cast=int)
+# Browsers then use HTTPS for the API for a year, even when someone types http:// (only this host:
+# no includeSubDomains, the owner's other sakibkx.tech sites are not affected).
+SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
 
-# Static files (Django admin) served by the app itself
+# Static files (DRF's browsable pages) served by the app itself
 MIDDLEWARE = [
     MIDDLEWARE[0],  # SecurityMiddleware first
     'whitenoise.middleware.WhiteNoiseMiddleware',

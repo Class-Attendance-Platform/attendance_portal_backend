@@ -137,7 +137,9 @@ cd /var/www/attendanceportal-backend && venv/bin/python manage.py download_face_
 cd /var/www/attendanceportal-backend && venv/bin/python manage.py check --deploy --settings=config.settings.production
 ```
 
-(Two warnings about HSTS and SSL redirect are expected: nginx and certbot handle HTTPS.)
+(Three warnings are expected: security.W008 about the SSL redirect, which nginx and certbot handle,
+and security.W005 and security.W021 about HSTS includeSubDomains and preload, which stay off on
+purpose so your other sakibkx.tech sites are not affected.)
 
 ```bash
 sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-api.service /etc/systemd/system/
@@ -149,6 +151,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-api
 
 ```bash
 sudo systemctl status attendanceportal-api --no-pager
+```
+
+A daily cleanup of expired sign-in tokens (they pile up otherwise; runs at 03:30 Dhaka time):
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.service /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-flush-tokens.timer
 ```
 
 Your admin account (asks for its password twice; use your own email):
@@ -291,6 +299,12 @@ Only when `deploy/attendanceportal-api.service` changed (the hand-off says so):
 sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-api.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart attendanceportal-api
 ```
 
+Only when the token cleanup files (`deploy/attendanceportal-flush-tokens.*`) changed:
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.service /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/ && sudo systemctl daemon-reload
+```
+
 ## Removing an account
 
 Shows the account and everything that goes with it, without changing anything:
@@ -363,7 +377,9 @@ links point to `WEB_URL` and work for one day, once.
 
 This release changes the database, so `migrate` is needed (the backend update command above runs
 it). Existing accounts are marked approved; new sign-ups wait for an admin (Approvals page). Every
-semester gets its hidden class group. The service file and the nginx files did not change.
+semester gets its hidden class group. The API service file did not change; the web app's nginx
+file gains one HTTPS line (step 6) and there is a new daily cleanup timer (step 7). Django's own
+admin site is gone (`/admin/` answers 404); the app's admin pages replace it.
 
 1. Backend: pull, install, migrate, restart:
 
@@ -372,8 +388,10 @@ cd /var/www/attendanceportal-backend && git pull && venv/bin/pip install -r requ
 ```
 
 2. New `.env` keys are optional (the defaults are fine): `WEB_URL`, `MIN_APP_VERSION`,
-   `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT`, the request limits and email (see
-   "Email for password reset" and `.env.example`). Restart the API after changing `.env`.
+   `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT`, the request limits (now also
+   `THROTTLE_PASSWORD_CHANGE`), `PASSWORD_RESET_EMAIL_INTERVAL` and email (see "Email for password
+   reset" and `.env.example`). `SECURE_HSTS_SECONDS` is now on by default (browsers use HTTPS for
+   the API for a year). Restart the API after changing `.env`.
 3. Accounts left half-made by the old sign-up page: run the dry run in "Broken sign-ups" above,
    send the output, then the same with `--apply`.
 4. Students added to a semester after its first class (under the old app) have no join date yet,
@@ -390,6 +408,33 @@ cd /var/www/attendanceportal-backend && venv/bin/python manage.py backfill_join_
 
 ```bash
 cd /var/www/attendanceportal-frontend && git pull && npm ci && npm run build:web
+```
+
+6. HTTPS for the web app, always: add the Strict-Transport-Security line to the live nginx file
+   (certbot changed it, so it is edited in place; the command does nothing if the line is there):
+
+```bash
+grep -q Strict-Transport-Security /etc/nginx/sites-available/attendanceportal.sakibkx.tech.conf || sudo sed -i '/add_header Cache-Control/a add_header Strict-Transport-Security "max-age=31536000" always;' /etc/nginx/sites-available/attendanceportal.sakibkx.tech.conf
+```
+
+```bash
+sudo nginx -t
+```
+
+Only if `nginx -t` says the test is successful:
+
+```bash
+sudo systemctl reload nginx
+```
+
+7. The daily cleanup of expired sign-in tokens:
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.service /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-flush-tokens.timer
+```
+
+```bash
+systemctl list-timers attendanceportal-flush-tokens.timer --no-pager
 ```
 
 ## Troubleshooting

@@ -1,5 +1,6 @@
 """Admin: people (API v2 section 2) — approvals, students, teachers."""
 from datetime import timedelta
+from unittest import mock
 
 from django.core.cache import cache
 from django.test import TestCase
@@ -112,6 +113,41 @@ class ApprovalTests(AdminTestCase):
         other = make_admin('other-admin@example.com')
         self.assertEqual(self.client.post(f'/api/admin/users/{other.id}/reject/').status_code, 404)
 
+    def test_reject_leaves_an_account_approved_meanwhile_alone(self):
+        """Admin A approves; admin B (or an old tab) still shows the sign-up and presses Reject."""
+        self.client.post(f'/api/admin/users/{self.new_student.user.id}/verify/')
+        add_face(self.new_student)  # the student is already using the account
+        res = self.client.post(f'/api/admin/users/{self.new_student.user.id}/reject/')
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_approved'))
+        self.assertEqual(res.data['message'], 'new@example.com was approved meanwhile. '
+                                              'To remove the account, delete it on the Students page.')
+        user = User.objects.get(pk=self.new_student.user.pk)
+        self.assertEqual((user.deleted, user.is_active), (False, True))
+        self.assertTrue(StudentFace.objects.exists())
+        self.assertEqual(login('new@example.com').status_code, 200)
+
+        self.client.post(f'/api/admin/users/{self.new_teacher.user.id}/verify/')
+        res = self.client.post(f'/api/admin/users/{self.new_teacher.user.id}/reject/')
+        self.assertIn('delete it on the Teachers page', res.data['message'])
+
+    def test_reject_racing_an_approve_keeps_the_approval(self):
+        """Reject read the sign-up while it waited; an Approve committed before Reject wrote."""
+        stale = User.objects.get(pk=self.new_student.user.pk)
+        User.objects.filter(pk=stale.pk).update(is_verified=True)
+        with mock.patch('apps.users.views.admin.get_object_or_404', return_value=stale):
+            res = self.client.post(f'/api/admin/users/{stale.id}/reject/')
+        self.assertEqual((res.status_code, res.data['code']), (409, 'already_approved'))
+        user = User.objects.get(pk=stale.pk)
+        self.assertEqual((user.is_verified, user.deleted, user.is_active), (True, False, True))
+
+    def test_approve_racing_a_reject_does_not_approve_a_rejected_account(self):
+        stale = User.objects.get(pk=self.new_student.user.pk)
+        User.objects.filter(pk=stale.pk).update(deleted=True, is_active=False)
+        with mock.patch('apps.users.views.admin.get_object_or_404', return_value=stale):
+            res = self.client.post(f'/api/admin/users/{stale.id}/verify/')
+        self.assertEqual(res.status_code, 404)
+        self.assertFalse(User.objects.get(pk=stale.pk).is_verified)
+
 
 class ResetPasswordTests(AdminTestCase):
     def test_reset_password(self):
@@ -219,6 +255,46 @@ class StudentCreateTests(AdminTestCase):
             self.assertTrue(res.data['message'])
         self.assertFalse(User.objects.filter(email='new.student@example.com').exists())
 
+    def test_a_value_of_a_deleted_account_says_to_restore_it(self):
+        make_student('gone@example.com', 2302011, deleted=True, is_active=False)
+        hint = ' It belongs to a deleted account: restore it on the Students page (Status: Deleted).'
+        res = self.client.post('/api/admin/students/', self.payload(email='GONE@example.com'), format='json')
+        self.assertEqual(res.data['errors']['email'], ['An account with this email already exists.' + hint])
+        res = self.client.post('/api/admin/students/', self.payload(student_id=2302011), format='json')
+        self.assertEqual(res.data['errors']['student_id'], ['A student with this student ID already exists.' + hint])
+        # Public sign-up never says whether an account is deleted
+        res = APIClient().post('/api/auth/register/', {
+            **self.payload(email='gone@example.com', student_id=2302011), 'role': 'STUDENT',
+            'password': 'Strong-pass-2026',
+        }, format='json')
+        self.assertEqual(res.data['errors']['email'], ['An account with this email already exists.'])
+        self.assertEqual(res.data['errors']['student_id'], ['A student with this student ID already exists.'])
+
+    def test_a_name_with_a_control_character_is_refused(self):
+        res = self.client.post('/api/admin/students/', self.payload(last_name='Ja\x07han'), format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.data['errors']['last_name'],
+                         ['This name contains a hidden control character. Type it again without it.'])
+
+    def test_a_body_that_is_not_an_object(self):
+        """A JSON list or plain value is refused before any view reads it (config/parsers.py)."""
+        student = make_student('student@example.com', 2302001)
+        calls = [
+            (self.client.post, '/api/admin/students/'),
+            (self.client.post, '/api/admin/teachers/'),
+            (self.client.patch, f'/api/admin/students/{student.id}/'),
+            (self.client.post, '/api/auth/logout/'),
+            (self.client.post, '/api/hardware/devices/'),
+        ]
+        for send, url in calls:
+            for body in ([], ['x'], 'text', 7):
+                res = send(url, body, format='json')
+                self.assertEqual((res.status_code, res.data['code']), (400, 'parse_error'), (url, body))
+                self.assertEqual(res.data['message'], 'Send the data as a JSON object.')
+        # Form posts still work (they are not JSON)
+        res = self.client.post('/api/admin/students/', self.payload(), format='multipart')
+        self.assertEqual(res.status_code, 201)
+
 
 class StudentDetailTests(AdminTestCase):
     def setUp(self):
@@ -256,6 +332,11 @@ class StudentDetailTests(AdminTestCase):
         # Its own values are fine
         self.assertEqual(self.client.patch(self.url, {'email': 'student@example.com', 'student_id': 2302001},
                                            format='json').status_code, 200)
+        # A deleted account's values: the admin is told to restore that one
+        make_student('gone@example.com', 2302003, deleted=True, is_active=False)
+        res = self.client.patch(self.url, {'email': 'gone@example.com'}, format='json')
+        self.assertTrue(res.data['errors']['email'][0].endswith(
+            'It belongs to a deleted account: restore it on the Students page (Status: Deleted).'))
 
     def test_patch_email_longer_than_150_characters(self):
         res = self.client.patch(self.url, {'email': f'{"a" * 140}@example.com'}, format='json')

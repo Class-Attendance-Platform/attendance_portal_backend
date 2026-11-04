@@ -260,6 +260,32 @@ class ExportEndpointTests(ExportTestCase):
         self.assertEqual([cell.data_type for cell in ws['C'] if cell.value in names], ['s'])
         self.assertTrue(names[0].startswith("'="))
 
+    def test_a_control_character_in_a_stored_name_never_breaks_an_export(self):
+        """Names saved before the name rule may hold one; XML (xlsx, docx) cannot."""
+        from docx import Document
+        from openpyxl import load_workbook
+
+        self.ayesha.user.last_name = 'Rah\x07man'
+        self.ayesha.user.save()
+        self.teacher.user.last_name = 'Ud\x0bdin'
+        self.teacher.user.save()
+        self.ci.course.title = 'Software\x00 Engineering'
+        self.ci.course.save()
+        for fmt in ('csv', 'xlsx', 'pdf', 'docx'):
+            self.assertEqual(self.export(f'format={fmt}').status_code, 200, fmt)
+        ws = load_workbook(io.BytesIO(self.export('format=xlsx').content)).active
+        self.assertIn('Ayesha Rahman', [cell.value for cell in ws['C']])
+        document = Document(io.BytesIO(self.export('format=docx').content))
+        self.assertIn('Teacher: Karim Uddin', [p.text for p in document.paragraphs])
+        self.assertIn('CSE301 — Software Engineering', [p.text for p in document.paragraphs])
+
+    def test_the_file_name_keeps_only_safe_characters(self):
+        self.ci.course.code = 'CSE "301"\x07/x'
+        self.ci.course.save()
+        res = self.export('format=pdf')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res['Content-Disposition'], 'attachment; filename="CSE_301_x_attendance_full.pdf"')
+
     def test_pdf_header_and_dhaka_time(self):
         with mock.patch('django.utils.timezone.now', return_value=FIXED_NOW):
             content = self.export('format=pdf').content

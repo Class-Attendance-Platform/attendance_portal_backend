@@ -14,10 +14,11 @@ from apps.users.serializers import (
 )
 from apps.users.services import (
     blacklist_refresh_tokens, can_sign_in, email_reset_enabled, find_user_by_email, is_approved,
-    send_password_reset_email, tokens_for, user_from_reset_link,
+    send_password_reset_email_once, tokens_for, user_from_reset_link,
 )
 from apps.users.throttles import (
-    LoginIPThrottle, LoginThrottle, PasswordForgotThrottle, RegisterIPThrottle, RegisterThrottle,
+    LoginIPThrottle, LoginThrottle, PasswordChangeThrottle, PasswordForgotThrottle, RegisterIPThrottle,
+    RegisterThrottle,
 )
 from config.errors import error_response, validation_error_response
 
@@ -117,6 +118,7 @@ class MeView(APIView):
 
 class PasswordChangeView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PasswordChangeThrottle]
 
     def post(self, request):
         serializer = PasswordChangeSerializer(data=request.data)
@@ -154,7 +156,7 @@ class PasswordForgotView(PublicView):
         user = find_user_by_email(serializer.validated_data['email'])
         # Same answer either way, so nobody can test which emails have accounts.
         if user is not None and can_sign_in(user) and user.has_usable_password():
-            send_password_reset_email(user)
+            send_password_reset_email_once(user)
         return Response({'success': True, 'message': FORGOT_SENT_MESSAGE})
 
 

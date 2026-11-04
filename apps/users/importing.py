@@ -20,6 +20,7 @@ from django.db.models.functions import Lower
 from apps.academic.services import add_members, join_date, main_classroom
 from apps.users.constants import DEPARTMENT, EMAIL_MAX_LENGTH, FACULTY, LEVELS, TERMS
 from apps.users.models import StudentProfile, User
+from apps.users.serializers import CONTROL_CHARACTERS, deleted_hint
 from apps.users.services import temporary_password, temporary_password_hash
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -93,9 +94,15 @@ def read_table(upload):
 
 
 def _read_csv(raw: bytes):
-    try:
-        text = raw.decode('utf-8-sig')  # Excel's "CSV UTF-8" starts with a BOM
-    except UnicodeDecodeError:
+    # Excel's "CSV UTF-8" starts with a BOM; its plain "CSV (Comma delimited)" is Windows-1252
+    # (read as latin-1, a ’ in O’Brien would become an invisible control character).
+    for encoding in ('utf-8-sig', 'cp1252'):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
         text = raw.decode('latin-1')
     try:
         dialect = csv.Sniffer().sniff(text[:4096], delimiters=',;\t')
@@ -192,6 +199,8 @@ def plan_import(table):
             errors.append('Name is missing.')
         elif len(first_name) > 150 or len(last_name) > 150:
             errors.append('Name is too long.')
+        elif CONTROL_CHARACTERS.search(first_name + last_name):
+            errors.append('Name contains a hidden control character.')
 
         email = value(cells, 'email').lower()
         if not email:
@@ -241,20 +250,26 @@ def plan_import(table):
     candidates = [r for r in rows if r['status'] == 'create']
     sids = {r['student_id'] for r in candidates}
     emails = {r['email'] for r in candidates}
-    existing_sids = set(StudentProfile.objects.filter(student_id__in=sids).values_list('student_id', flat=True))
-    email_roles = {}
-    for email_lower, username_lower, role in (
+    # {student id: its account is deleted}
+    existing_sids = dict(StudentProfile.objects.filter(student_id__in=sids).values_list('student_id', 'user__deleted'))
+    email_accounts = {}  # {email: (role, deleted)} of its account; a student account wins
+    for email_lower, username_lower, role, deleted in (
         User.objects.annotate(email_lower=Lower('email'), username_lower=Lower('username'))
         .filter(Q(email_lower__in=emails) | Q(username_lower__in=emails))
-        .values_list('email_lower', 'username_lower', 'role')
+        .values_list('email_lower', 'username_lower', 'role', 'deleted')
     ):
         for key in (email_lower, username_lower):
-            if key in emails and email_roles.get(key) != User.Role.STUDENT:
-                email_roles[key] = role
+            if key in emails and email_accounts.get(key, (None, None))[0] != User.Role.STUDENT:
+                email_accounts[key] = (role, deleted)
     for row in candidates:
-        role = email_roles.get(row['email'])
+        role, email_deleted = email_accounts.get(row['email'], (None, None))
         if row['student_id'] in existing_sids or role == User.Role.STUDENT:
             row['status'] = 'exists'
+            # Every account it matches is deleted: the admin should restore it, not look for it.
+            matched = [existing_sids.get(row['student_id']), email_deleted if role == User.Role.STUDENT else None]
+            matched = [deleted for deleted in matched if deleted is not None]
+            if matched and all(matched):
+                row['errors'].append(deleted_hint(User.Role.STUDENT))
         elif role is not None:
             row['status'] = 'error'
             row['errors'].append('This email belongs to a teacher or admin account.')

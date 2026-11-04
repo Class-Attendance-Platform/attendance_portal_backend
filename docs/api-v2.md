@@ -15,7 +15,9 @@ one class.
 - Base path `/api/`. JSON. Auth: `Authorization: Bearer <access>`; refresh tokens rotate (the old one
   is blacklisted after use). Tokens carry a fingerprint of the password: after a password change,
   reset or admin reset, every token made before it answers 401 `code: "password_changed"` ("Your
-  password was changed. Please sign in again."), access tokens at once. `POST /auth/refresh/`
+  password was changed. Please sign in again."), access tokens at once; refresh tokens too, although
+  the change blacklisted them (a blacklisted refresh token with the old fingerprint says
+  `password_changed`, other invalid ones `token_not_valid`). `POST /auth/refresh/`
   `{refresh}` → `{access, refresh}` gives an older refresh token without the fingerprint one (no
   one is signed out when this starts).
 - Every response has `success: bool`. Errors: `{"success": false, "message": "<one readable
@@ -23,6 +25,8 @@ one class.
   present on errors** (for field errors it repeats the first one in plain words, never "field: msg").
   Common codes: `not_authenticated`, `token_not_valid`, `password_changed` (401), `permission_denied`
   (403), `not_found`, `throttled`. Unknown addresses and server errors answer JSON too (`not_found`, `server_error`).
+  A JSON body must be an object: malformed JSON, a list or a plain value → 400 `code: "parse_error"`
+  (for the last two: "Send the data as a JSON object."), before any endpoint reads it.
 - Existing keys keep their names (some are camelCase, e.g. `userName`, `presentStudents`). **New keys
   are snake_case.**
 - Dates `YYYY-MM-DD` (Asia/Dhaka local date). Date-times ISO 8601 with offset. The app formats them
@@ -36,7 +40,8 @@ one class.
   and filters run on the server with query parameters where listed.
 - Throttles (DRF): login 10/min per IP + email (a class signs in together from one campus IP) with a
   300/min cap per IP, register 10/hour per IP + email (failed tries count too) with a 300/hour cap per
-  IP, password forgot 20/hour per IP, check-in 30/min per user, face registration 20/hour per user
+  IP, password forgot 20/hour per IP, password change 10/hour per user (failed tries count too),
+  check-in 30/min per user, face registration 20/hour per user
   (POST /faces/me/ only: each one runs the face engine; failed tries count too). Throttled requests
   get 429 with a `message` (`code: "throttled"`, `Retry-After` header). The rates are settings
   (section 10). The counts live in the cache (Redis); while it cannot be reached the limits are
@@ -70,7 +75,9 @@ stored lower case.
 Atomic: a duplicate email / student id / employee id gives 400 with a field error (never 500, never a
 half-made account). Emails hold at most 150 characters (the email is also the username), here and
 in the admin's create/PATCH and import. Password rules: Django validators (8+ chars, not common,
-not all digits).
+not all digits). Names may not contain control characters (invisible ones like a tab or a bell
+would break the exports): 400 field error "This name contains a hidden control character. Type it
+again without it." (also in PATCH /auth/me/ and the admin's create/PATCH).
 201 `{success, status: "pending", message: "Account created. An admin will approve it soon."}`.
 **No tokens.** ADMIN cannot register.
 
@@ -81,7 +88,8 @@ Body `{refresh}`. Blacklists it. 200 `{success}` (also 200 if it was already inv
 Body `{first_name?, last_name?}`. Users may change only their name. 200 `{success, user}`.
 
 ### POST /auth/password/change/ (signed in)
-Body `{current_password, new_password}`. 400 `code: "wrong_password"` or field errors. On success
+Body `{current_password, new_password}`. 400 `code: "wrong_password"` or field errors; 429
+`throttled` after 10 tries an hour (`THROTTLE_PASSWORD_CHANGE`). On success
 **all the user's refresh tokens are blacklisted** and the other devices' access tokens stop working
 at once (401 `password_changed`): other devices are signed out. A fresh pair is returned:
 `{success, tokens: {access, refresh}}`.
@@ -92,7 +100,9 @@ to reset the password."}` when email is configured (400 only for a malformed ema
 configured on the server:
 503 `code: "email_not_configured"`, "Password reset by email is not set up. Ask an admin to reset
 your password." The email links to `{WEB_URL}/reset-password?uid=<uidb64>&token=<token>` (Django's
-password-reset token, valid 1 day, one use). Inactive / pending users get no email.
+password-reset token, valid 1 day, one use). Inactive / pending users get no email. One email per
+account in 15 minutes (`PASSWORD_RESET_EMAIL_INTERVAL`; later requests get the same 200 and no
+email). The email goes out after the answer, so the answer takes as long for any email.
 
 ### POST /auth/password/reset/ (public)
 Body `{uid, token, new_password}`. 200 `{success, message}`; 400 `code: "invalid_link"` ("This link
@@ -124,6 +134,11 @@ current_level?, current_semester?, employee_id?}]}`, oldest first (students and 
 ### POST /admin/users/<user_id>/reject/
 Soft-deletes the account (`deleted=true`, `is_active=false`) and frees nothing else (email and ids stay
 taken; a student's face data is removed, as with DELETE). Students and teachers only (404 otherwise). 200.
+An account approved meanwhile (another admin or tab) is not touched: 409 `code: "already_approved"`
+("<email> was approved meanwhile. To remove the account, delete it on the Students page."; the
+Teachers page for a teacher). Approve and reject each write only if the account is still as they read
+it: when both race, the first wins and the other answers this 409 (reject) or 404 (approve of an
+account rejected meanwhile).
 
 ### POST /admin/users/<user_id>/reset-password/
 Body `{new_password}` (the admin's temporary password, validated). Blacklists the user's refresh
@@ -140,7 +155,10 @@ List query: `?search=` (name, email or student id), `?level=`, `?semester=` (ter
 POST body `{email, first_name, last_name, student_id, current_level, current_semester, password}`
 (password = temporary password; account is approved). PATCH is **partial**: any of `email,
 first_name, last_name, student_id, current_level, current_semester` (uniqueness checked, 400 field
-errors). DELETE = soft delete (also removes face data, as today, and signs the user out). Unbinding
+errors; when the email or id belongs to a deleted account the message adds "It belongs to a deleted
+account: restore it on the Students page (Status: Deleted)." (Teachers page for a teacher's); public
+sign-up never says this). DELETE = soft delete (also removes face data, as today, and signs the user
+out). Unbinding
 devices is gone (see 5). Other `?status=` values → 400 `code: "invalid_status"`. GET of one row also
 works for deleted accounts; PATCH/DELETE of a deleted one → 404 (restore first). PUT is still accepted
 as PATCH for the old app. POST → 201 `{success, student: <row>}`; GET/PATCH → `{success, student}`.
@@ -176,7 +194,12 @@ error ("Same student ID as row 2."); an email of a teacher/admin account is an e
 only the "create" rows, in one transaction (409 `code: "conflict"` if someone added the same students
 meanwhile); without a class group yet, the semester gets its "Main" one. File problems (not .csv/.xlsx,
 missing columns, empty, unreadable, over 2 MB or 1000 rows) → 400 `code: "invalid_file"`; an unknown
-`semester_id` → 400 field error.
+`semester_id` → 400 field error; a finished one → 400 `code: "semester_finished"` ("<label> is
+finished. Reopen it first, or choose another semester.", as Promote). A CSV is read as UTF-8 (with or
+without a BOM), else as Windows-1252 (Excel's plain "CSV"). A name with a control character is an
+error ("Name contains a hidden control character."). An "exists" row whose matching account is
+deleted says so in `errors` ("It belongs to a deleted account: restore it on the Students page
+(Status: Deleted).").
 
 ## 3. Admin: semesters, courses, assignments
 
@@ -574,8 +597,10 @@ without a log for them. The app's words: "Marked absent by teacher", "Marked abs
   plain table** (one header row, full words) so it opens cleanly in other programs: `text/csv;
   charset=utf-8` starting with a UTF-8 byte order mark, so Excel on Windows shows names with
   letters outside English correctly.
-  The file name comes in `Content-Disposition` (e.g. `CSE301_attendance_full.pdf`); CORS exposes that
-  header (`Access-Control-Expose-Headers`) so the web app on its own host can name the download.
+  The file name comes in `Content-Disposition` (e.g. `CSE301_attendance_full.pdf`; the course code
+  keeps only letters, digits, `-` and `_`); CORS exposes that header (`Access-Control-Expose-Headers`)
+  so the web app on its own host can name the download. Characters an XML file cannot hold (control
+  characters in names stored before the name rule) are left out of every format.
 
 ## 9. Data changes (migrations, append-only)
 
@@ -607,9 +632,11 @@ without a log for them. The app's words: "Marked absent by teacher", "Marked abs
 
 - Email (Gmail SMTP): `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` (Gmail app password),
   `DEFAULT_FROM_EMAIL`; host smtp.gmail.com:587 TLS. Empty `EMAIL_HOST_USER` = email reset off.
+  `PASSWORD_RESET_EMAIL_INTERVAL` (seconds, default 900): one reset email per account in that time (a
+  send that fails does not count).
 - `WEB_URL` (https://attendanceportal.sakibkx.tech) for links in emails and QR codes.
 - `MIN_APP_VERSION`, `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT` (75).
 - Throttle rates: `THROTTLE_LOGIN`, `THROTTLE_LOGIN_IP`, `THROTTLE_REGISTER`, `THROTTLE_REGISTER_IP`,
-  `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_CHECK_IN`, `THROTTLE_FACE_REGISTER`
+  `THROTTLE_PASSWORD_FORGOT`, `THROTTLE_PASSWORD_CHANGE`, `THROTTLE_CHECK_IN`, `THROTTLE_FACE_REGISTER`
   (defaults as in Conventions; raise them if a class behind one campus IP gets blocked). `NUM_PROXIES`
   (production, default 1 = nginx) picks the visitor IP from `X-Forwarded-For`.

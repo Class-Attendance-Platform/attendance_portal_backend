@@ -14,7 +14,8 @@ APP_KEYS = (
     'WEB_URL', 'MIN_APP_VERSION', 'LATEST_APP_VERSION', 'ATTENDANCE_MIN_PERCENT',
     'EMAIL_HOST_USER', 'EMAIL_HOST_PASSWORD', 'DEFAULT_FROM_EMAIL',
     'THROTTLE_LOGIN', 'THROTTLE_LOGIN_IP', 'THROTTLE_REGISTER', 'THROTTLE_REGISTER_IP', 'THROTTLE_PASSWORD_FORGOT',
-    'THROTTLE_CHECK_IN', 'THROTTLE_FACE_REGISTER', 'NUM_PROXIES',
+    'THROTTLE_PASSWORD_CHANGE', 'THROTTLE_CHECK_IN', 'THROTTLE_FACE_REGISTER', 'NUM_PROXIES',
+    'PASSWORD_RESET_EMAIL_INTERVAL',
 )
 
 
@@ -41,8 +42,11 @@ class SettingsTests(SimpleTestCase):
         self.assertEqual(s.EMAIL_HOST_USER, '')  # empty = password reset by email is off
         self.assertEqual(s.REST_FRAMEWORK['DEFAULT_THROTTLE_RATES'], {
             'login': '10/min', 'login_ip': '300/min', 'register': '10/hour', 'register_ip': '300/hour',
-            'password_forgot': '20/hour', 'check_in': '30/min', 'face_register': '20/hour',
+            'password_forgot': '20/hour', 'password_change': '10/hour', 'check_in': '30/min',
+            'face_register': '20/hour',
         })
+        self.assertEqual(s.PASSWORD_RESET_EMAIL_INTERVAL, 15 * 60)
+        self.assertTrue(s.SEND_EMAIL_IN_BACKGROUND)
 
     def test_values_from_env(self):
         s = load_base_settings(

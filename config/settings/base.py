@@ -99,6 +99,12 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    # DRF's defaults, except that a JSON body must be an object (config/parsers.py)
+    'DEFAULT_PARSER_CLASSES': (
+        'config.parsers.ObjectJSONParser',
+        'rest_framework.parsers.FormParser',
+        'rest_framework.parsers.MultiPartParser',
+    ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
@@ -122,6 +128,8 @@ REST_FRAMEWORK = {
         'register': config('THROTTLE_REGISTER', default='10/hour'),
         'register_ip': config('THROTTLE_REGISTER_IP', default='300/hour'),
         'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='20/hour'),
+        # Per signed-in user: guessing the current password from a session left open
+        'password_change': config('THROTTLE_PASSWORD_CHANGE', default='10/hour'),
         'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
         # Each face registration (POST /faces/me/) runs the face engine on 3 photos
         'face_register': config('THROTTLE_FACE_REGISTER', default='20/hour'),
@@ -181,6 +189,10 @@ DEFAULT_FROM_EMAIL = config(
     default=f'HSTU Attendance Portal <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'webmaster@localhost',
 )
 PASSWORD_RESET_TIMEOUT = 60 * 60 * 24  # reset links work for 1 day
+# One reset email per account in this many seconds (protects the inbox and the Gmail quota)
+PASSWORD_RESET_EMAIL_INTERVAL = config('PASSWORD_RESET_EMAIL_INTERVAL', default=15 * 60, cast=int)
+# Reset emails go out after the answer, so its timing does not tell which emails have accounts
+SEND_EMAIL_IN_BACKGROUND = True
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True  # Tighten in production
