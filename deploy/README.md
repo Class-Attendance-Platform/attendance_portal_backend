@@ -137,7 +137,9 @@ cd /var/www/attendanceportal-backend && venv/bin/python manage.py download_face_
 cd /var/www/attendanceportal-backend && venv/bin/python manage.py check --deploy --settings=config.settings.production
 ```
 
-(Two warnings about HSTS and SSL redirect are expected: nginx and certbot handle HTTPS.)
+(Three warnings are expected: security.W008 about the SSL redirect, which nginx and certbot handle,
+and security.W005 and security.W021 about HSTS includeSubDomains and preload, which stay off on
+purpose so your other sakibkx.tech sites are not affected.)
 
 ```bash
 sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-api.service /etc/systemd/system/
@@ -149,6 +151,12 @@ sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-api
 
 ```bash
 sudo systemctl status attendanceportal-api --no-pager
+```
+
+A daily cleanup of expired sign-in tokens (they pile up otherwise; runs at 03:30 Dhaka time):
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.service /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-flush-tokens.timer
 ```
 
 Your admin account (asks for its password twice; use your own email):
@@ -258,9 +266,9 @@ In the frontend repo on GitHub: Releases → Draft a new release → "Choose a t
 → "Create new tag on publish", target `master` → Publish release. The builds start by themselves
 (about 20–40 minutes) and add three files to that release:
 
-- `Class-Attendance-Portal-1.0.0.apk` (Android)
-- `Class-Attendance-Portal-Setup-1.0.0.exe` (Windows)
-- `Class-Attendance-Portal-1.0.0.AppImage` (Linux)
+- `HSTU-Attendance-Portal-1.0.0.apk` (Android)
+- `HSTU-Attendance-Portal-Setup-1.0.0.exe` (Windows)
+- `HSTU-Attendance-Portal-1.0.0.AppImage` (Linux)
 
 Share https://github.com/Class-Attendance-Platform/attendance_portal_frontend/releases/latest.
 Use a higher number (`v1.0.1`, `v1.1.0`, ...) for each new version.
@@ -291,6 +299,12 @@ Only when `deploy/attendanceportal-api.service` changed (the hand-off says so):
 sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-api.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart attendanceportal-api
 ```
 
+Only when the token cleanup files (`deploy/attendanceportal-flush-tokens.*`) changed:
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.service /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/ && sudo systemctl daemon-reload
+```
+
 ## Removing an account
 
 Shows the account and everything that goes with it, without changing anything:
@@ -303,6 +317,125 @@ Then the same with `--apply` to remove it. Its login tokens stop working at once
 remove the last active admin. If the dry run prints Django admin history you want to keep, save
 that output first: it is deleted with the account. To only block a student or teacher, prefer the admin pages: removing
 a student also removes their attendance records.
+
+## Broken sign-ups
+
+The old sign-up page could save an account without its student/teacher profile. Such accounts
+cannot use the app and block their email from signing up again. This lists them, without changing
+anything:
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py cleanup_broken_signups --settings=config.settings.production
+```
+
+Then the same with `--apply` to remove them.
+
+## Email for password reset
+
+"Forgot password" sends a reset link by email through a Gmail account. It is off until
+`EMAIL_HOST_USER` is set; meanwhile the app tells people to ask an admin, and admins can always
+set a temporary password on the admin pages.
+
+1. Pick the Gmail account that sends the emails (a separate one for the portal is best) and sign
+   in to it in a browser.
+2. Turn on 2-Step Verification: Google Account → Security → 2-Step Verification. App passwords
+   need it.
+3. Open https://myaccount.google.com/apppasswords, type a name such as `Attendance Portal` and
+   press Create. Google shows a 16-letter app password once: copy it. It only lets the portal send
+   mail; it is not your Gmail login password. Remove it on the same page to switch email off.
+4. Put it in the backend `.env` (on the server, as root):
+
+```bash
+cd /var/www/attendanceportal-backend && nano .env
+```
+
+Fill in these lines (they are already in the file if it came from `.env.example`). Type the 16
+letters without spaces; keep comments on their own lines (text after a value becomes part of it):
+
+```
+EMAIL_HOST_USER=<gmail address>
+EMAIL_HOST_PASSWORD=<16-letter app password>
+WEB_URL=https://attendanceportal.sakibkx.tech
+```
+
+Restart the API so it reads `.env` again:
+
+```bash
+sudo systemctl restart attendanceportal-api
+```
+
+Send yourself a test email (use your own address; it should arrive within a minute):
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py sendtestemail you@example.com --settings=config.settings.production
+```
+
+If it fails, the error names the problem (usually a mistyped address or app password). The reset
+links point to `WEB_URL` and work for one day, once.
+
+## Update notes: API v2 (the redesign)
+
+This release changes the database, so `migrate` is needed (the backend update command above runs
+it). Existing accounts are marked approved; new sign-ups wait for an admin (Approvals page). Every
+semester gets its hidden class group. The API service file did not change; the web app's nginx
+file gains one HTTPS line (step 6) and there is a new daily cleanup timer (step 7). Django's own
+admin site is gone (`/admin/` answers 404); the app's admin pages replace it.
+
+1. Backend: pull, install, migrate, restart:
+
+```bash
+cd /var/www/attendanceportal-backend && git pull && venv/bin/pip install -r requirements.txt && venv/bin/python manage.py migrate --settings=config.settings.production && venv/bin/python manage.py collectstatic --noinput --settings=config.settings.production && sudo systemctl restart attendanceportal-api
+```
+
+2. New `.env` keys are optional (the defaults are fine): `WEB_URL`, `MIN_APP_VERSION`,
+   `LATEST_APP_VERSION`, `ATTENDANCE_MIN_PERCENT`, the request limits (now also
+   `THROTTLE_PASSWORD_CHANGE`), `PASSWORD_RESET_EMAIL_INTERVAL` and email (see "Email for password
+   reset" and `.env.example`). `SECURE_HSTS_SECONDS` is now on by default (browsers use HTTPS for
+   the API for a year). Restart the API after changing `.env`.
+3. Accounts left half-made by the old sign-up page: run the dry run in "Broken sign-ups" above,
+   send the output, then the same with `--apply`.
+4. Students added to a semester after its first class (under the old app) have no join date yet,
+   so their earlier classes would count as absent. This lists the join dates it would set (from
+   each student's first attendance record), with their numbers before and after, without changing
+   anything:
+
+```bash
+cd /var/www/attendanceportal-backend && venv/bin/python manage.py backfill_join_dates --settings=config.settings.production
+```
+
+   Send the output; after a yes, the same with `--apply` writes them.
+5. Web app: rebuild it:
+
+```bash
+cd /var/www/attendanceportal-frontend && git pull && npm ci && npm run build:web
+```
+
+6. HTTPS for the web app, always: add the Strict-Transport-Security line to the live nginx file
+   (certbot changed it, so it is edited in place; the command does nothing if the line is there):
+
+```bash
+grep -q Strict-Transport-Security /etc/nginx/sites-available/attendanceportal.sakibkx.tech.conf || sudo sed -i '/add_header Cache-Control/a add_header Strict-Transport-Security "max-age=31536000" always;' /etc/nginx/sites-available/attendanceportal.sakibkx.tech.conf
+```
+
+```bash
+sudo nginx -t
+```
+
+Only if `nginx -t` says the test is successful:
+
+```bash
+sudo systemctl reload nginx
+```
+
+7. The daily cleanup of expired sign-in tokens:
+
+```bash
+sudo cp /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.service /var/www/attendanceportal-backend/deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-flush-tokens.timer
+```
+
+```bash
+systemctl list-timers attendanceportal-flush-tokens.timer --no-pager
+```
 
 ## Troubleshooting
 

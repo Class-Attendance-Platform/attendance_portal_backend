@@ -1,0 +1,89 @@
+"""
+Request limits (API v2 conventions). Rates live in settings (REST_FRAMEWORK
+DEFAULT_THROTTLE_RATES, overridable from .env); counts are kept in the cache (Redis).
+When the cache cannot be reached the limits are skipped (logged), so signing in never
+depends on Redis.
+"""
+import hashlib
+import logging
+
+from rest_framework.throttling import SimpleRateThrottle, UserRateThrottle
+
+logger = logging.getLogger(__name__)
+
+
+class FailOpenMixin:
+    """Lets the request through when the counts cannot be read or written (cache down)."""
+
+    def allow_request(self, request, view):
+        try:
+            return super().allow_request(request, view)
+        except Exception:
+            logger.exception('Request limit %s skipped: the cache is unreachable', getattr(self, 'scope', ''))
+            return True
+
+
+class IPRateThrottle(FailOpenMixin, SimpleRateThrottle):
+    """Counts per visitor IP, signed in or not."""
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {'scope': self.scope, 'ident': self.get_ident(request)}
+
+
+class IPAndEmailRateThrottle(IPRateThrottle):
+    """
+    Counts per visitor IP *and* the email in the request body. A whole class signs in from one
+    campus IP at the start of a lesson, so a per-IP count alone would lock them out; per email it
+    still stops password guessing on one account.
+    """
+
+    def get_cache_key(self, request, view):
+        data = getattr(request, 'data', None)
+        # upper() first, as the database matches emails (UPPER(email) = UPPER(%s)): 'ſ' and 'ı'
+        # would otherwise make separate counts for the same account.
+        email = str(data.get('email', '') if isinstance(data, dict) else '').strip().upper().lower()
+        # A digest, not the email itself: a huge made-up email must not become a huge Redis key.
+        digest = hashlib.sha256(email.encode('utf-8', 'surrogatepass')).hexdigest()[:32]
+        return self.cache_format % {'scope': self.scope, 'ident': f'{self.get_ident(request)}:{digest}'}
+
+
+class LoginThrottle(IPAndEmailRateThrottle):
+    scope = 'login'
+
+
+class LoginIPThrottle(IPRateThrottle):
+    """A wide cap per IP on top, against trying many accounts from one address."""
+    scope = 'login_ip'
+
+
+class RegisterThrottle(IPAndEmailRateThrottle):
+    """
+    Sign-up tries per IP + email: a class signs up together from one campus IP, often retrying
+    after "This password is too common", so a per-IP count alone would block the ones after them.
+    Failed tries still count (the 400 says whether an email or student ID is taken).
+    """
+    scope = 'register'
+
+
+class RegisterIPThrottle(IPRateThrottle):
+    """A wide cap per IP on top, against creating or probing many accounts from one address."""
+    scope = 'register_ip'
+
+
+class PasswordForgotThrottle(IPRateThrottle):
+    scope = 'password_forgot'
+
+
+class PasswordChangeThrottle(FailOpenMixin, UserRateThrottle):
+    """Per signed-in user: someone at a session left open cannot keep guessing the current password."""
+    scope = 'password_change'
+
+
+class CheckInThrottle(FailOpenMixin, UserRateThrottle):
+    """Per signed-in student (falls back to the IP)."""
+    scope = 'check_in'
+
+
+class FaceRegisterThrottle(FailOpenMixin, UserRateThrottle):
+    """Face registrations per signed-in student: each one runs the face engine on 3 photos."""
+    scope = 'face_register'

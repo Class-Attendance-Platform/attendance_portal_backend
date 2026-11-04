@@ -1,0 +1,16 @@
+# Removes expired sign-in tokens (SimpleJWT's outstanding and blacklisted rows), which otherwise
+# pile up: about two rows per refresh per active user. Started daily by the .timer file.
+# Install:  sudo cp deploy/attendanceportal-flush-tokens.service deploy/attendanceportal-flush-tokens.timer /etc/systemd/system/
+#           sudo systemctl daemon-reload && sudo systemctl enable --now attendanceportal-flush-tokens.timer
+# Logs:     journalctl -u attendanceportal-flush-tokens
+[Unit]
+Description=Attendance Portal: remove expired sign-in tokens
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=attendanceportal
+Group=www-data
+WorkingDirectory=/var/www/attendanceportal-backend
+Environment=DJANGO_SETTINGS_MODULE=config.settings.production
+ExecStart=/var/www/attendanceportal-backend/venv/bin/python manage.py flushexpiredtokens
