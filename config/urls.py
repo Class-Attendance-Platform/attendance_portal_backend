@@ -10,7 +10,6 @@ urlpatterns = [
     path('api/student/', include('apps.users.urls.student')),
     path('api/teacher/', include('apps.academic.urls.teacher')),
     path('api/sessions/', include('apps.attendance.urls')),
-    path('api/hardware/', include('apps.hardware.urls')),
     path('api/reports/', include('apps.reports.urls')),
     path('api/faces/', include('apps.faces.urls')),
 ]

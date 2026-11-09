@@ -1,8 +1,8 @@
 # Plans and fixes, November 2026
 
-This is the record of the work on branch `claude/beautiful-mccarthy-xlseq5` in both repos, on 3 and 4 November 2026: every plan, the decision taken on it, and every fix. The same file is in the backend and frontend repos.
+This is the record of the work on branch `claude/beautiful-mccarthy-xlseq5` (merged into `main` / `master`) in both repos, in November 2026: every plan, the decision taken on it, and every fix. The same file is in the backend and frontend repos.
 
-**Where it stands (9 November 2026):** every fix below is committed and pushed, and CI passed on both pull requests. Neither pull request is merged and nothing is deployed, so the live site has none of this yet. Two more fixes are planned but not started: see [Planned, not started](#planned-not-started).
+**Where it stands (9 November 2026):** both pull requests (#3 in backend, #2 in frontend) are merged, and the two remaining planned frontend items (`expo-crypto` for temporary passwords and device IDs, and quiet refresh when returning to the tab, window or app on admin and teacher pages) plus the database backup step in `deploy/README.md` are finished. Nothing is deployed to the VPS yet: see [Still to do](#still-to-do).
 
 ## Commits and pull requests
 
@@ -15,8 +15,10 @@ This is the record of the work on branch `claude/beautiful-mccarthy-xlseq5` in b
 | `37981cf` | backend | QA fixes: exports, sign-in limits, approvals, import, deploy safety |
 | `51c3bce` | frontend | QA fixes: admin pages, sign-in pages, desktop app |
 | `a278c7b` | frontend | Android: a version tag needs the release signing key |
+| `937ce1f` | backend | Merge pull request #3 into `main` |
+| `df1b0fe` | frontend | Merge pull request #2 into `master` |
 
-Pull requests, which also carry the redesign commits from the earlier cloud session:
+Pull requests (merged):
 
 - [Backend #3](https://github.com/Class-Attendance-Platform/attendance_portal_backend/pull/3), into `main`
 - [Frontend #2](https://github.com/Class-Attendance-Platform/attendance_portal_frontend/pull/2), into `master`
@@ -27,6 +29,7 @@ Pull requests, which also carry the redesign commits from the earlier cloud sess
 | Promote fix | 423 pass, 1 skipped | 123 pass | clean |
 | Admin refresh | 423 pass, 1 skipped | 133 pass | clean |
 | QA fixes | 444 pass, 1 skipped | 133 pass | clean |
+| `expo-crypto` + tab return refresh | 444 pass, 1 skipped | 138 pass | clean |
 
 The skipped test is the real face engine test, which needs the face models downloaded.
 
@@ -100,7 +103,7 @@ The skipped test is the real face engine test, which needs the face models downl
 
 **Decision:** Go, with failures kept silent (the old numbers stay, no message).
 
-**Left for later at that point:** reloading when you switch back to the browser tab or window (now [planned](#planned-not-started)), Promote always sending exactly the ticked students, and the backend import accepting a finished semester (both done in the QA round).
+**Left for later at that point:** reloading when you switch back to the browser tab or window (done in section 8), Promote always sending exactly the ticked students, and the backend import accepting a finished semester (both done in the QA round).
 
 **Result:** `abe2017`.
 
@@ -130,7 +133,7 @@ Every item was done: see [Every fix](#every-fix).
 
 - Adding students to a finished semester (the decision above).
 - One-time sign-outs when a sign-in upgrades the stored password hash.
-- Android temporary passwords made with `Math.random`, because the fix needs a new native package. This is now [planned](#planned-not-started).
+- Android temporary passwords made with `Math.random`, because the fix needs a new native package (done in section 8).
 
 **Result:** `37981cf`, `51c3bce` and `a278c7b`.
 
@@ -141,6 +144,22 @@ Every item was done: see [Every fix](#every-fix).
 - CI passed on both: the backend tests, and the frontend web, Android and Windows and Linux desktop builds plus the Vercel preview.
 - Auto-fix is on for both, so CI failures, merge conflicts and review comments wake the session. Nothing merges automatically.
 - The only comment so far was Vercel's automatic status note, which needed no change.
+
+### 8. Temporary passwords on Android, tab-return refresh, and deploy guide backup step (9 Nov)
+
+**Decisions (chosen 4 Nov, completed 9 Nov):**
+
+- **Secure temporary passwords on Android (`expo-crypto`):**
+  - Added `expo-crypto` (`~55.0.16`, Expo SDK 55). Android links it automatically without `expo prebuild`.
+  - Temporary passwords (`components/admin/files.ts`, `components/admin/rules.ts`) and the check-in `device_id` (`lib/device.ts`) use `Crypto.getRandomValues` on every platform, with no `Math.random` fallback.
+  - `randomIndex` rejects the `Uint32` modulo tail and `makeTemporaryPassword` draws from the allowed alphabet until at least 2 letters and 2 digits are present, so every allowed character is equally likely.
+  - Added tests in `tests/admin-rules.test.mjs` covering the password rules (10 characters, at least 2 letters and 2 digits, no look-alike characters `0/O/1/l/I`) and unbiased index selection.
+- **Refresh when coming back to the tab, window or app (admin and teacher pages):**
+  - Moved `onComeBack` to `hooks/onComeBack.ts` and its pure listener logic to `lib/come-back.ts`. Student pages keep working as before (`components/student/use-load.ts`).
+  - Admin pages (`components/admin/hooks.ts`) run the same `focusAction` on tab/window/app return as on in-app Back: quiet reload when showing data, retry when on an error screen, and never undoing an on-screen `setData` change.
+  - Teacher pages (`components/teacher/use-load.ts`: courses, course, student, roll call, history) reload quietly on tab/window/app return; roll call keeps unsaved switches.
+  - Added `tests/come-back.test.mjs` covering web tab/window return (reloads once even when both `visibilitychange` and `focus` fire), clicking into a window you never left (reloads nothing), and Android `AppState` return.
+- **Deploy guide (`deploy/README.md`):** added the `pg_dump` database backup command and migration/`.env` notes to "Update notes: API v2 (the redesign)".
 
 ## Every fix
 
@@ -185,7 +204,7 @@ Every item was done: see [Every fix](#every-fix).
 
 - HSTS (browsers always use HTTPS) is on by default for the API and in the web app's nginx file. Subdomains and preload stay off, so other `sakibkx.tech` sites are not affected.
 - A daily timer removes expired sign-in tokens at 03:30 Dhaka time. (`deploy/attendanceportal-flush-tokens.service` and `.timer`)
-- `deploy/README.md` has the timer install, the three `check --deploy` warnings to expect (W005, W008, W021), and update notes steps 6 and 7.
+- `deploy/README.md` has the timer install, the three `check --deploy` warnings to expect (W005, W008, W021), the pre-migration database backup command, and update notes steps 6 and 7.
 - `.env.example` has the new keys, with comments on their own lines.
 - `docs/api-v2.md` and `CLAUDE.md` describe all of the above.
 
@@ -271,9 +290,14 @@ Every item was done: see [Every fix](#every-fix).
 
 - A `v*` tag build without all four `ANDROID_*` signing secrets now fails with a clear error, so a release is never signed with the public debug key. Pull request and manual builds keep the debug key. (`.github/workflows/android.yml`)
 
+### Frontend: `expo-crypto` and tab-return refresh
+
+- Added `expo-crypto` (`~55.0.16`). Temporary passwords (`components/admin/files.ts`, `components/admin/rules.ts`) and the check-in `device_id` (`lib/device.ts`) use `Crypto.getRandomValues` on every platform without `Math.random`, and every allowed password character is equally likely (`tests/admin-rules.test.mjs`).
+- Shared tab/window/app return listener (`hooks/onComeBack.ts`, `lib/come-back.ts`, `tests/come-back.test.mjs`), used by student (`components/student/use-load.ts`), admin (`components/admin/hooks.ts`) and teacher (`components/teacher/use-load.ts`) pages.
+
 ## How it was checked
 
-**Tests.** Backend tests always ran with `--settings=config.settings.test` (local SQLite), so the production database was never touched. These new tests were confirmed to fail without their fix: Promote, export names, the failed reset email, and look-alike letters in the limit keys.
+**Tests.** Backend tests always ran with `--settings=config.settings.test` (local SQLite), so the production database was never touched. These new tests were confirmed to fail without their fix: Promote, export names, the failed reset email, and look-alike letters in the limit keys. Frontend unit tests (`npm test`, 138 passing) and `npx tsc --noEmit` + `npm run build:web` all pass cleanly.
 
 **Independent reviews.** Each finding was checked by a second reader who tried to disprove it. All confirmed findings were fixed:
 
@@ -294,37 +318,12 @@ Every item was done: see [Every fix](#every-fix).
 
 **Not checked:** the Android app on a phone, the Electron desktop app itself, the real face engine, Import's layout switch on screen, and the live site (nothing is deployed).
 
-## Planned, not started
-
-The owner chose these on 4 November. They are waiting for a "Go". Frontend only, pushed to the open pull requests when done.
-
-**Secure temporary passwords on Android.** Decision: add `expo-crypto`.
-
-- The app installs no secure random package, so on Android the new-student, new-teacher and set-password dialogs fall back to `Math.random`, unless the JavaScript engine provides a secure source (not tested on a device).
-- Add `expo-crypto` 55.0.x, the version for Expo SDK 55. Android links it automatically, so no `expo prebuild`.
-- Temporary passwords use it on every platform, the `Math.random` fallback goes, and every allowed character becomes equally likely.
-- The device id that check-ins send uses it too.
-- A new test covers the password rules: 10 characters, at least 2 letters and 2 digits, no look-alike characters.
-
-**Refresh when you come back to the tab, window or app.** Decision: admin and teacher pages.
-
-- Student pages already do this. That code moves to a shared file, and student pages keep working as before.
-- Admin pages: coming back does the same as going Back to the page. It reloads quietly, an error screen tries again, and it never undoes a save on screen.
-- Teacher pages (courses, course, student, roll call, history) reload quietly. Roll call keeps unsaved changes, as it already does on Back.
-- A new test covers it: coming back reloads once, and clicking into a window you never left reloads nothing.
-
-**Checks for both:** type check and tests; in a local web build, the Add student password and one quiet reload after a tab switch; then the Android build in CI. The Android app on a real phone stays part of the phone test below.
-
 ## Still to do
 
 **Deploy, by the owner.** Old and new versions do not work together, so pick a time when no class is running and do the backend and web back to back.
 
-1. Back up the database. The deploy guide's update notes do not say this yet.
-2. Merge backend #3.
-3. Run steps 1 to 4 of "Update notes: API v2" in `deploy/README.md`.
-4. Merge frontend #2. Merging into `master` also makes a Vercel production deploy, so do this after step 3.
-5. Run steps 5 to 7 of the same notes.
-6. Say "check now" for a read-only check of the live site.
+1. Run the database backup command and steps 1 to 7 of "Update notes: API v2 (the redesign)" in `deploy/README.md`.
+2. Say "check now" for a read-only check of the live site.
 
 Two things to know:
 

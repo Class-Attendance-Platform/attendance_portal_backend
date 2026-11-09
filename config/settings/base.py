@@ -24,7 +24,6 @@ INSTALLED_APPS = [
     'apps.users',
     'apps.academic',
     'apps.attendance',
-    'apps.hardware',
     'apps.reports',
     'apps.faces',
 ]
@@ -155,17 +154,24 @@ SIMPLE_JWT = {
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
 REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': REDIS_URL,
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-            # TLS (rediss://, e.g. Upstash) needs this; a plain local redis:// must not get it
-            'CONNECTION_POOL_KWARGS': {'ssl_cert_reqs': None} if REDIS_URL.startswith('rediss://') else {},
+if REDIS_URL in ('', 'locmem', 'memory'):
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
         }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+                # TLS (rediss://, e.g. Upstash) needs this; a plain local redis:// must not get it
+                'CONNECTION_POOL_KWARGS': {'ssl_cert_reqs': None} if REDIS_URL.startswith('rediss://') else {},
+            }
+        }
+    }
 
 # ── App ───────────────────────────────────────────────────────────────────────
 # Public address of the web app: links in emails and QR codes (no trailing slash)

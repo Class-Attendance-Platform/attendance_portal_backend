@@ -375,11 +375,19 @@ links point to `WEB_URL` and work for one day, once.
 
 ## Update notes: API v2 (the redesign)
 
-This release changes the database, so `migrate` is needed (the backend update command above runs
-it). Existing accounts are marked approved; new sign-ups wait for an admin (Approvals page). Every
-semester gets its hidden class group. The API service file did not change; the web app's nginx
-file gains one HTTPS line (step 6) and there is a new daily cleanup timer (step 7). Django's own
-admin site is gone (`/admin/` answers 404); the app's admin pages replace it.
+Old and new versions do not work together, so pick a time when no class is running and do the
+backend and web app back to back. This release runs 5 migrations: existing accounts are marked
+approved (reversing the migration does not undo that), new sign-ups wait for an admin (Approvals
+page), and every semester gets its hidden class group. The API service file did not change; the
+web app's nginx file gains one HTTPS line (step 6) and there is a new daily cleanup timer (step
+7). Django's own admin site is gone (`/admin/` answers 404); the app's admin pages replace it.
+
+Before starting, back up the database (keep the file until you have checked the site, then remove
+it with `shred -u` as in section 2):
+
+```bash
+sudo -u postgres pg_dump --format=custom --file=/root/attendanceportal-before-v2.dump attendanceportal && chmod 600 /root/attendanceportal-before-v2.dump && ls -lh /root/attendanceportal-before-v2.dump
+```
 
 1. Backend: pull, install, migrate, restart:
 
@@ -404,7 +412,9 @@ cd /var/www/attendanceportal-backend && venv/bin/python manage.py backfill_join_
 ```
 
    Send the output; after a yes, the same with `--apply` writes them.
-5. Web app: rebuild it:
+5. Web app: rebuild it (note: `git pull` removes the old tracked `.env` in the frontend checkout;
+   only the one-time Neon copy in section 2 reads that file, so finish that first if it is still
+   needed):
 
 ```bash
 cd /var/www/attendanceportal-frontend && git pull && npm ci && npm run build:web

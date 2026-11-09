@@ -284,7 +284,6 @@ class StudentCreateTests(AdminTestCase):
             (self.client.post, '/api/admin/teachers/'),
             (self.client.patch, f'/api/admin/students/{student.id}/'),
             (self.client.post, '/api/auth/logout/'),
-            (self.client.post, '/api/hardware/devices/'),
         ]
         for send, url in calls:
             for body in ([], ['x'], 'text', 7):
