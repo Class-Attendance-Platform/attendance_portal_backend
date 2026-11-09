@@ -1,6 +1,6 @@
 # Plans and fixes, November 2026
 
-This is the record of the work on branch `claude/beautiful-mccarthy-xlseq5` (merged into `main` / `master`) in both repos, in November 2026: every plan, the decision taken on it, and every fix. The same file is in the backend and frontend repos.
+This is the record of the work on branch `feature/attendance-redesign` (merged into `main` / `master`) in both repos, in November 2026: every plan, the decision taken on it, and every fix. The same file is in the backend and frontend repos.
 
 **Where it stands (9 November 2026):** both pull requests (#3 in backend, #2 in frontend) are merged, and the two remaining planned frontend items (`expo-crypto` for temporary passwords and device IDs, and quiet refresh when returning to the tab, window or app on admin and teacher pages) plus the database backup step in `deploy/README.md` are finished. Nothing is deployed to the VPS yet: see [Still to do](#still-to-do).
 
@@ -70,7 +70,7 @@ The skipped test is the real face engine test, which needs the face models downl
 
 **Found:** both files were tracked in the public frontend repo and should not have been.
 
-**Plan:** stop tracking both (`git rm --cached` and `.gitignore`), keep the local copies, and update the note in the frontend `CLAUDE.md`. `.env.production` stays tracked, because the Android build uses it. Git history is not rewritten, because the project rules forbid a force-push.
+**Plan:** stop tracking both (`git rm --cached` and `.gitignore`), keep the local copies, and update the note in the frontend `DEVELOPMENT.md`. `.env.production` stays tracked, because the Android build uses it. Git history is not rewritten, because the project rules forbid a force-push.
 
 **Decision:** Go, for both files.
 
@@ -206,7 +206,7 @@ Every item was done: see [Every fix](#every-fix).
 - A daily timer removes expired sign-in tokens at 03:30 Dhaka time. (`deploy/attendanceportal-flush-tokens.service` and `.timer`)
 - `deploy/README.md` has the timer install, the three `check --deploy` warnings to expect (W005, W008, W021), the pre-migration database backup command, and update notes steps 6 and 7.
 - `.env.example` has the new keys, with comments on their own lines.
-- `docs/api-v2.md` and `CLAUDE.md` describe all of the above.
+- `docs/api-v2.md` and `DEVELOPMENT.md` describe all of the above.
 
 ### Frontend: tracked secrets (`62dcbce`)
 
