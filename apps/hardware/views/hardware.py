@@ -21,6 +21,7 @@ from apps.hardware.serializers import (
     EnrollCompleteSerializer,
     EnrollmentRequestSerializer,
 )
+from config.errors import validation_error_response
 
 
 # ── Admin — Device Management ─────────────────────────────────────────────────
@@ -33,7 +34,8 @@ class HardwareDeviceListCreateView(APIView):
         return Response({'success': True, 'devices': HardwareDeviceSerializer(devices, many=True).data})
 
     def post(self, request):
-        name = request.data.get('device_name', '').strip()
+        name = request.data.get('device_name')
+        name = name.strip() if isinstance(name, str) else ''
         if not name:
             return Response({'success': False, 'message': 'device_name is required.'}, status=400)
 
@@ -81,7 +83,7 @@ class HardwareSyncView(APIView):
     def post(self, request):
         serializer = HardwareSyncSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data       = serializer.validated_data
         student_id = data['student_id']
@@ -105,16 +107,17 @@ class HardwareSyncView(APIView):
 
         # Add to Redis
         try:
-            added = redis_service.add_submission(
+            result = redis_service.add_submission(
                 session_id=str(session.id),
                 student_int_id=student.student_id,
                 student_name=student.user.get_full_name(),
-                mac='hardware',
+                method='FINGERPRINT',
+                profile_id=str(student.id),
             )
         except redis_service.SessionBusy:
             return Response({'success': False, 'message': 'Busy, please scan again.'}, status=503)
 
-        if not added:
+        if result != redis_service.ADDED:
             return Response({
                 'success': False,
                 'message': f'{student.user.get_full_name()} already recorded or session expired.'
@@ -140,7 +143,7 @@ class EnrollStartView(APIView):
     def post(self, request):
         serializer = EnrollStartSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         student = request.user.student_profile
 
@@ -178,7 +181,7 @@ class EnrollCompleteView(APIView):
     def post(self, request):
         serializer = EnrollCompleteSerializer(data=request.data)
         if not serializer.is_valid():
-            return Response({'success': False, 'errors': serializer.errors}, status=400)
+            return validation_error_response(serializer.errors)
 
         data = serializer.validated_data
 

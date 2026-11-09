@@ -5,8 +5,11 @@ Key schema:
   session:{session_uuid}  →  JSON  {
       course_info_id : str,
       mode           : str,
-      end_time       : float  (unix timestamp),
-      submissions    : { "<student_id_int>": {"name": str, "mac": str} }
+      end_time       : float  (unix timestamp; extend moves it),
+      submissions    : { "<student_id_int>": {"name": str, "profile_id": str,
+                                              "method": "QR"|"CODE"|"TEACHER"|"FINGERPRINT",
+                                              "device_id": str, "time": float} },
+      devices        : { "<device_id>": "<student_id_int>" }   # one phone, one student per session
   }
 
 Check-ins are accepted until end_time. The data is kept for a grace period
@@ -23,6 +26,12 @@ from redis.exceptions import LockError
 
 PREFIX = 'session'
 GRACE_SECONDS = 7 * 24 * 60 * 60
+
+# add_submission results
+ADDED = 'added'
+CLOSED = 'closed'                      # session over (or its live data is gone)
+ALREADY_CHECKED_IN = 'already_checked_in'
+DEVICE_USED = 'device_used'            # this device already checked in another student
 
 _local_lock = threading.Lock()  # used when the cache has no locks (tests, local preview)
 
@@ -59,12 +68,18 @@ def _lock(session_id: str):
             pass  # held longer than its timeout; the write itself already happened
 
 
+def _save(session_id: str, data: dict):
+    ttl = max(int(data['end_time'] - time.time()), 0) + GRACE_SECONDS
+    cache.set(_key(session_id), json.dumps(data), timeout=ttl)
+
+
 def create_session_cache(session_id: str, course_info_id: str, mode: str, duration_seconds: int):
     data = {
         'course_info_id': course_info_id,
         'mode': mode,
         'end_time': time.time() + duration_seconds,
         'submissions': {},
+        'devices': {},
     }
     cache.set(_key(session_id), json.dumps(data), timeout=duration_seconds + GRACE_SECONDS)
 
@@ -82,22 +97,45 @@ def is_open(data: dict | None) -> bool:
     return bool(data) and time.time() <= data['end_time']
 
 
-def add_submission(session_id: str, student_int_id: int, student_name: str, mac: str) -> bool:
+def add_submission(session_id: str, student_int_id: int, student_name: str, method: str,
+                   device_id: str = '', profile_id: str = '') -> str:
     """
-    Returns True if successfully added, False if session closed / already submitted.
+    Records a check-in. Returns ADDED, CLOSED, ALREADY_CHECKED_IN or DEVICE_USED (a
+    `device_id` that already checked in a different student in this session).
     Raises SessionBusy when too many check-ins arrive at once.
     """
     with _lock(session_id):
         data = get_session_cache(session_id)
         if not is_open(data):
-            return False
+            return CLOSED
         key = str(student_int_id)
         if key in data['submissions']:
-            return False   # already submitted
-        data['submissions'][key] = {'name': student_name, 'mac': mac}
-        ttl = max(int(data['end_time'] - time.time()), 0) + GRACE_SECONDS
-        cache.set(_key(session_id), json.dumps(data), timeout=ttl)
-        return True
+            return ALREADY_CHECKED_IN
+        devices = data.setdefault('devices', {})
+        if device_id and devices.get(device_id, key) != key:
+            return DEVICE_USED
+        data['submissions'][key] = {
+            'name': student_name,
+            'profile_id': str(profile_id),
+            'method': method,
+            'device_id': device_id,
+            'time': time.time(),
+        }
+        if device_id:
+            devices[device_id] = key
+        _save(session_id, data)
+        return ADDED
+
+
+def extend_session(session_id: str, seconds: int) -> float | None:
+    """Moves end_time later; returns the new end_time (None if the session is over or gone)."""
+    with _lock(session_id):
+        data = get_session_cache(session_id)
+        if not is_open(data):
+            return None
+        data['end_time'] += seconds
+        _save(session_id, data)
+        return data['end_time']
 
 
 def get_submissions(session_id: str) -> dict:
@@ -129,3 +167,12 @@ def time_left(session_id: str) -> int:
 
 def delete_session_cache(session_id: str):
     cache.delete(_key(session_id))
+
+
+def discard_session(session_id: str):
+    """Deletes a cancelled session's data (under the lock, so a late check-in cannot write it back)."""
+    try:
+        with _lock(session_id):
+            delete_session_cache(session_id)
+    except SessionBusy:
+        delete_session_cache(session_id)

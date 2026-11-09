@@ -99,6 +99,12 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    # DRF's defaults, except that a JSON body must be an object (config/parsers.py)
+    'DEFAULT_PARSER_CLASSES': (
+        'config.parsers.ObjectJSONParser',
+        'rest_framework.parsers.FormParser',
+        'rest_framework.parsers.MultiPartParser',
+    ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
@@ -109,6 +115,25 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
+    # Every error carries a readable "message" (config/errors.py)
+    'EXCEPTION_HANDLER': 'config.errors.api_exception_handler',
+    # Per IP + email (login, register), per IP (the wide caps, password_forgot) or per user
+    # (check_in, face_register); see apps/users/throttles.py. Classes behind one shared campus IP
+    # may need higher limits: raise them in .env.
+    'DEFAULT_THROTTLE_RATES': {
+        # A class signs in or signs up together from one campus IP: login and sign-up count per
+        # IP + email, with a wide per-IP cap; the reset count allows a whole class.
+        'login': config('THROTTLE_LOGIN', default='10/min'),
+        'login_ip': config('THROTTLE_LOGIN_IP', default='300/min'),
+        'register': config('THROTTLE_REGISTER', default='10/hour'),
+        'register_ip': config('THROTTLE_REGISTER_IP', default='300/hour'),
+        'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='20/hour'),
+        # Per signed-in user: guessing the current password from a session left open
+        'password_change': config('THROTTLE_PASSWORD_CHANGE', default='10/hour'),
+        'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
+        # Each face registration (POST /faces/me/) runs the face engine on 3 photos
+        'face_register': config('THROTTLE_FACE_REGISTER', default='20/hour'),
+    },
 }
 
 # ── JWT ───────────────────────────────────────────────────────────────────────
@@ -121,6 +146,11 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
+    # A password change, reset or admin reset also ends the other devices' access tokens at once
+    # (tokens carry a fingerprint of the password hash). Older refresh tokens get the fingerprint
+    # when they are refreshed, so switching this on signs nobody out: apps/users/jwt.py.
+    'CHECK_REVOKE_TOKEN': True,
+    'TOKEN_REFRESH_SERIALIZER': 'apps.users.jwt.PasswordCheckedRefreshSerializer',
 }
 
 # ── Redis ─────────────────────────────────────────────────────────────────────
@@ -137,8 +167,38 @@ CACHES = {
     }
 }
 
+# ── App ───────────────────────────────────────────────────────────────────────
+# Public address of the web app: links in emails and QR codes (no trailing slash)
+WEB_URL = config('WEB_URL', default='https://attendanceportal.sakibkx.tech').rstrip('/')
+# The Android app blocks with "Please update" below MIN_APP_VERSION (GET /api/config/app/)
+MIN_APP_VERSION = config('MIN_APP_VERSION', default='1.0.0')
+LATEST_APP_VERSION = config('LATEST_APP_VERSION', default='1.0.0')
+ATTENDANCE_MIN_PERCENT = config('ATTENDANCE_MIN_PERCENT', default=75, cast=int)
+
+# ── Email (Gmail SMTP; password reset links) ──────────────────────────────────
+# Empty EMAIL_HOST_USER = password reset by email is off (admins reset passwords instead).
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_TIMEOUT = 20
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')  # Gmail app password
+DEFAULT_FROM_EMAIL = config(
+    'DEFAULT_FROM_EMAIL',
+    default=f'HSTU Attendance Portal <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'webmaster@localhost',
+)
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24  # reset links work for 1 day
+# One reset email per account in this many seconds (protects the inbox and the Gmail quota)
+PASSWORD_RESET_EMAIL_INTERVAL = config('PASSWORD_RESET_EMAIL_INTERVAL', default=15 * 60, cast=int)
+# Reset emails go out after the answer, so its timing does not tell which emails have accounts
+SEND_EMAIL_IN_BACKGROUND = True
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 CORS_ALLOW_ALL_ORIGINS = True  # Tighten in production
+# The web app (another host) names downloaded exports from Content-Disposition; browsers only let
+# a page read that header when it is exposed.
+CORS_EXPOSE_HEADERS = ['Content-Disposition']
 
 # ── Face attendance ───────────────────────────────────────────────────────────
 # Engine "insightface" = InsightFace buffalo_l models via onnxruntime

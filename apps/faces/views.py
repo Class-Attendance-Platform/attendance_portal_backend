@@ -2,11 +2,14 @@ import logging
 import uuid as uuid_lib
 
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.academic.models import CourseInfo
+from apps.academic.views.teacher import future_date_response
+from apps.attendance.views.sessions import semester_finished_response
 from apps.faces import services
 from apps.faces.engines import FaceEngineUnavailable
 from apps.faces.models import StudentFace
@@ -15,6 +18,8 @@ from apps.users.models import StudentProfile
 from apps.users.permissions import (
     IsAdmin, IsAdminOrTeacher, IsStudent, can_manage_course, not_your_course_response,
 )
+from apps.users.throttles import FaceRegisterThrottle
+from config.errors import error_response
 
 logger = logging.getLogger(__name__)
 MAX_CLASS_PHOTOS = 3
@@ -35,12 +40,28 @@ def run_face_task(task):
 
 
 def _course(request):
-    """The course named by course_info_id, or None if the id is missing or malformed."""
+    """
+    The course named by course_info_id, or None if the id is missing or malformed, or the
+    course-info, its course or its semester is deleted.
+    """
     try:
         course_id = uuid_lib.UUID(str(request.data.get('course_info_id')))
     except ValueError:
         return None
-    return CourseInfo.objects.filter(id=course_id, deleted=False).first()
+    return CourseInfo.objects.select_related('semester').filter(
+        id=course_id, deleted=False, course__deleted=False, semester__deleted=False,
+    ).first()
+
+
+def _course_error(request, ci):
+    """An error response if the course can't take face attendance for this user, else None."""
+    if ci is None:
+        return error_response('Course not found.', status=404, code='not_found')
+    if not can_manage_course(request.user, ci):
+        return not_your_course_response()
+    if not ci.semester.is_active:
+        return semester_finished_response()
+    return None
 
 
 def _profile(request):
@@ -50,6 +71,11 @@ def _profile(request):
 class MyFaceView(APIView):
     """A student's own face registration: status, register (3 photos), delete."""
     permission_classes = [IsStudent]
+
+    def get_throttles(self):
+        # Only registering runs the face engine; the status (asked on every visit to home,
+        # account and the face page) and deleting are not limited.
+        return [FaceRegisterThrottle()] if self.request.method == 'POST' else []
 
     def get(self, request):
         student = _profile(request)
@@ -116,10 +142,9 @@ class RecognizeClassView(APIView):
 
     def post(self, request):
         ci = _course(request)
-        if ci is None:
-            return Response({'success': False, 'message': 'Course not found.'}, status=404)
-        if not can_manage_course(request.user, ci):
-            return not_your_course_response()
+        error = _course_error(request, ci)
+        if error:
+            return error
         photos = request.FILES.getlist('photos')
         if not 1 <= len(photos) <= MAX_CLASS_PHOTOS:
             return Response(
@@ -129,19 +154,22 @@ class RecognizeClassView(APIView):
 
 
 class ConfirmFaceAttendanceView(APIView):
-    """Teacher confirms the reviewed list; saves it as a FACE session."""
+    """Teacher confirms the reviewed list; saves it as today's FACE session."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request):
         ci = _course(request)
-        if ci is None:
-            return Response({'success': False, 'message': 'Course not found.'}, status=404)
-        if not can_manage_course(request.user, ci):
-            return not_your_course_response()
+        error = _course_error(request, ci)
+        if error:
+            return error
         present_ids = request.data.get('present_student_ids', [])
         if not isinstance(present_ids, list):
             return Response({'success': False, 'message': 'present_student_ids must be a list.'}, status=400)
-        day = None
+        marked_ids = request.data.get('teacher_marked_ids', [])
+        if not isinstance(marked_ids, list):
+            return Response({'success': False, 'message': 'teacher_marked_ids must be a list.'}, status=400)
+        today = timezone.localdate()
+        day = today
         if request.data.get('date'):
             try:
                 day = parse_date(str(request.data['date']))
@@ -149,13 +177,24 @@ class ConfirmFaceAttendanceView(APIView):
                 day = None
             if day is None:
                 return Response({'success': False, 'message': 'Use a YYYY-MM-DD date.'}, status=400)
+            if day > today:
+                return future_date_response()
+            if day != today:
+                return error_response(
+                    'Class photo attendance is for today only. Use roll call for other dates.',
+                    status=400, code='not_today',
+                )
 
         def save():
-            session = services.save_face_attendance(ci, present_ids, day)
+            session = services.save_face_attendance(
+                ci, present_ids, day, user=request.user, teacher_marked_ids=marked_ids,
+            )
             return Response({
                 'success': True,
                 'session_id': str(session.id),
                 'date': str(session.date),
-                'total_present': session.logs.filter(status='PRESENT').count(),
+                # Deleted accounts keep their logs from an earlier save of the day but are not counted
+                'total_present': session.logs.filter(status='PRESENT', student__user__deleted=False).count(),
+                'skipped': session.skipped,
             }, status=201)
         return run_face_task(save)
