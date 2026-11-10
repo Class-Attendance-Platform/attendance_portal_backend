@@ -1,11 +1,12 @@
 from django.urls import path
 from apps.users.views.admin import (
-    PendingUsersView, VerifyUserView, RejectUserView, ResetUserPasswordView,
+    AutoApprovalSettingsView, PendingUsersView, VerifyUserView, RejectUserView, ResetUserPasswordView,
     AdminStudentListCreateView, AdminStudentDetailView, AdminStudentRestoreView, AdminStudentImportView,
     AdminTeacherListCreateView, AdminTeacherDetailView, AdminTeacherRestoreView,
 )
 
 urlpatterns = [
+    path('auto-approval/', AutoApprovalSettingsView.as_view(), name='admin-auto-approval'),
     path('users/pending/', PendingUsersView.as_view(), name='admin-users-pending'),
     path('users/<uuid:uuid>/verify/', VerifyUserView.as_view(), name='admin-users-verify'),
     path('users/<uuid:uuid>/reject/', RejectUserView.as_view(), name='admin-users-reject'),

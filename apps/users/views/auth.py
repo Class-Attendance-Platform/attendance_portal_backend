@@ -67,13 +67,19 @@ class RegisterView(PublicView):
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
         try:
-            serializer.save()
+            user = serializer.save()
         except IntegrityError:
             # Someone took the email or id between the check and the save: answer like the check.
             again = NewAccountSerializer(data=request.data)
             if not again.is_valid():
                 return validation_error_response(again.errors)
             return error_response('This account could not be created. Please try again.', 400)
+        if user.is_verified:
+            return Response({
+                'success': True,
+                'status': 'approved',
+                'message': 'Account created successfully. You can sign in now.',
+            }, status=status.HTTP_201_CREATED)
         return Response({
             'success': True,
             'status': 'pending',

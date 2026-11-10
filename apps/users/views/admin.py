@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from apps.academic.models import Semester, StudentClassroom
 from apps.faces.models import StudentFace
 from apps.users.importing import ImportFileError, apply_import, plan_import, read_table
-from apps.users.models import StudentProfile, TeacherProfile
+from apps.users.models import ApprovalSetting, StudentProfile, TeacherProfile
 from apps.users.permissions import IsAdmin
 from apps.users.serializers import (
     NewAccountSerializer, NewPasswordSerializer, StudentUpdateSerializer, TeacherUpdateSerializer,
@@ -62,6 +62,43 @@ def _save(serializer, again):
 
 
 # ── Approvals ─────────────────────────────────────────────────────────────────
+
+
+class AutoApprovalSettingsView(APIView):
+    """View and update auto-approval settings for admin, teacher, and student."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        settings = ApprovalSetting.get_settings()
+        return Response({
+            'success': True,
+            'settings': {
+                'admin': settings.auto_approve_admin,
+                'teacher': settings.auto_approve_teacher,
+                'student': settings.auto_approve_student,
+            },
+        })
+
+    def patch(self, request):
+        settings = ApprovalSetting.get_settings()
+        data = request.data
+        if 'admin' in data:
+            settings.auto_approve_admin = bool(data['admin'])
+        if 'teacher' in data:
+            settings.auto_approve_teacher = bool(data['teacher'])
+        if 'student' in data:
+            settings.auto_approve_student = bool(data['student'])
+        settings.save()
+        return Response({
+            'success': True,
+            'message': 'Auto-approval settings updated.',
+            'settings': {
+                'admin': settings.auto_approve_admin,
+                'teacher': settings.auto_approve_teacher,
+                'student': settings.auto_approve_student,
+            },
+        })
+
 
 class PendingUsersView(APIView):
     """Sign-ups waiting for approval, oldest first."""

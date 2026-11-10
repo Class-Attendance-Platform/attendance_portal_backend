@@ -66,3 +66,25 @@ class DeviceBinding(models.Model):
 
     def __str__(self):
         return f'{self.student} → {self.mac_address}'
+
+class ApprovalSetting(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    auto_approve_admin = models.BooleanField(default=False)
+    auto_approve_teacher = models.BooleanField(default=False)
+    auto_approve_student = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Approval Setting'
+        verbose_name_plural = 'Approval Settings'
+
+    def __str__(self):
+        return f'Auto-approve (Admin: {self.auto_approve_admin}, Teacher: {self.auto_approve_teacher}, Student: {self.auto_approve_student})'
+
+    @classmethod
+    def get_settings(cls):
+        setting = cls.objects.first()
+        if not setting:
+            setting = cls.objects.create()
+        return setting
+

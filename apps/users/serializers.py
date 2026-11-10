@@ -8,7 +8,7 @@ from django.db.models import Q
 from rest_framework import serializers
 
 from .constants import DEPARTMENT, EMAIL_MAX_LENGTH, FACULTY, LEVELS, TERMS
-from .models import DeviceBinding, StudentProfile, TeacherProfile
+from .models import ApprovalSetting, DeviceBinding, StudentProfile, TeacherProfile
 from .services import iso
 
 User = get_user_model()
@@ -200,7 +200,7 @@ class NewAccountSerializer(serializers.Serializer):
     # Teachers
     employee_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
-    def __init__(self, *args, verified=False, **kwargs):
+    def __init__(self, *args, verified=None, **kwargs):
         self.verified = verified
         super().__init__(*args, **kwargs)
 
@@ -219,7 +219,7 @@ class NewAccountSerializer(serializers.Serializer):
         errors = {}
         role = attrs['role']
         # Admins create verified accounts; only they are told that a clashing account is deleted.
-        for_admin = self.verified
+        for_admin = bool(self.verified)
         if role == User.Role.STUDENT:
             for name, label in (('student_id', 'Student ID'), ('current_level', 'Level'), ('current_semester', 'Term')):
                 if attrs.get(name) in (None, ''):
@@ -253,16 +253,30 @@ class NewAccountSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         email = validated_data['email']
+        role = validated_data['role']
+        if self.verified is not None:
+            is_verified = bool(self.verified)
+        else:
+            settings = ApprovalSetting.get_settings()
+            if role == User.Role.STUDENT:
+                is_verified = settings.auto_approve_student
+            elif role == User.Role.TEACHER:
+                is_verified = settings.auto_approve_teacher
+            elif role == User.Role.ADMIN:
+                is_verified = settings.auto_approve_admin
+            else:
+                is_verified = False
+
         with transaction.atomic():
             user = User(
                 username=email,
                 email=email,
                 first_name=validated_data['first_name'].strip(),
                 last_name=validated_data.get('last_name', '').strip(),
-                role=validated_data['role'],
+                role=role,
                 faculty=FACULTY,
                 department=DEPARTMENT,
-                is_verified=self.verified,
+                is_verified=is_verified,
             )
             user.set_password(validated_data['password'])
             user.save()
