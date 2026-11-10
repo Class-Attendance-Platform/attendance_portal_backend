@@ -1,10 +1,9 @@
 """
 Business logic layer for attendance — keeps views thin.
 
-Live sessions (API v2 section 5): `start` writes the Redis entry first, then the session
-row; check-ins go to Redis (redis_service, locked read-modify-write); finalize_session()
-saves PRESENT/ABSENT logs exactly once. Corrections and roll calls (section 6) change saved
-logs and keep an AttendanceChange trail.
+Live sessions: `start` writes the session row; check-ins are saved directly to
+AttendanceLog; finalize_session() marks unsubmitted enrolled students as ABSENT.
+Corrections and roll calls change saved logs and keep an AttendanceChange trail.
 """
 import datetime as dt
 import hashlib
@@ -17,8 +16,9 @@ from django.utils import timezone
 
 from .models import AttendanceChange, AttendanceSession, AttendanceLog
 from apps.academic.models import CourseInfo, StudentClassroom
-from apps.attendance import codes, redis_service
+from apps.attendance import codes
 from apps.attendance.records import day_status
+from apps.users.models import StudentProfile
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,12 @@ DEFAULT_METHOD_FOR_MODE = {
     AttendanceSession.Mode.QR_OFFLINE: AttendanceLog.Method.QR,
 }
 
+# Submission results
+ADDED = 'added'
+CLOSED = 'closed'
+ALREADY_CHECKED_IN = 'already_checked_in'
+DEVICE_USED = 'device_used'
+
 
 def enrolled_memberships(course_info, day):
     """Who is in the course's class group on `day` (deleted accounts left out)."""
@@ -53,154 +59,207 @@ def can_join_live(student, session) -> bool:
 
 def local_datetime(timestamp):
     """A unix timestamp as a local (Asia/Dhaka) date-time."""
-    return timezone.localtime(dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc))
+    if isinstance(timestamp, (int, float)):
+        return timezone.localtime(dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc))
+    return timezone.localtime(timestamp)
 
 
-def commit_session_to_db(session: AttendanceSession, submissions: dict):
+def record_check_in(session: AttendanceSession, student, method: str, device_id: str = '', now=None) -> str:
     """
-    Called when a session is stopped.
-    Creates PRESENT logs for submitted students (with their check-in method and time),
-    ABSENT logs for everyone else in the classroom on the session's date
-    (not former members, not students who joined later, not deleted accounts).
-    Students who already have a log for this session keep it.
-    submissions: { "<student_int_id>": {"name", "profile_id", "method", "device_id", "time"} }
+    Records a student's check-in directly to the database.
+    Enforces:
+    1. Session is currently live and active
+    2. One check-in per student (ALREADY_CHECKED_IN)
+    3. One check-in per device in this session (DEVICE_USED) if device_id provided
     """
-    enrolled = enrolled_memberships(session.course_info, session.date).select_related('student')
+    now = timezone.now() if now is None else now
+    with transaction.atomic():
+        locked_session = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
+        if locked_session is None or not session_is_live(locked_session):
+            return CLOSED
 
-    now_time = timezone.localtime().time()
-    source = SOURCE_FOR_MODE.get(session.mode, AttendanceLog.Source.MANUAL)
-    default_method = DEFAULT_METHOD_FOR_MODE.get(session.mode, '')
+        # Check device ID uniqueness across other students in this session
+        if device_id:
+            if AttendanceLog.objects.filter(session=locked_session, device_id=device_id).exclude(student=student).exists():
+                return DEVICE_USED
 
-    logs_to_create = []
-    for membership in enrolled:
-        student = membership.student
-        submission = submissions.get(str(student.student_id))
-        if submission is not None:
-            checked_in = submission.get('time')
-            logs_to_create.append(AttendanceLog(
-                session=session, course_info=session.course_info, student=student, date=session.date,
-                time=local_datetime(checked_in).time() if checked_in else now_time,
-                status=AttendanceLog.Status.PRESENT, source=source,
-                method=submission.get('method') or default_method,
-            ))
+        # Check if already checked in
+        existing = AttendanceLog.objects.filter(session=locked_session, student=student).first()
+        if existing is not None and existing.status == AttendanceLog.Status.PRESENT:
+            return ALREADY_CHECKED_IN
+
+        source = SOURCE_FOR_MODE.get(locked_session.mode, AttendanceLog.Source.MANUAL)
+        now_time = timezone.localtime(now).time()
+        if existing is not None:
+            existing.status = AttendanceLog.Status.PRESENT
+            existing.source = source
+            existing.method = method
+            existing.device_id = device_id or ''
+            existing.time = now_time
+            existing.save(update_fields=['status', 'source', 'method', 'device_id', 'time'])
         else:
-            logs_to_create.append(AttendanceLog(
-                session=session, course_info=session.course_info, student=student, date=session.date,
-                time=now_time, status=AttendanceLog.Status.ABSENT, source=source,
-            ))
-
-    AttendanceLog.objects.bulk_create(logs_to_create, ignore_conflicts=True)
+            AttendanceLog.objects.create(
+                session=locked_session,
+                course_info=locked_session.course_info,
+                student=student,
+                date=locked_session.date,
+                time=now_time,
+                status=AttendanceLog.Status.PRESENT,
+                source=source,
+                method=method,
+                device_id=device_id or '',
+            )
+        return ADDED
 
 
 def finalize_session(session: AttendanceSession):
     """
-    Ends a session and saves its check-ins to the database. Safe to call
-    more than once (stop button, timer and status poll can race): only the
-    first call saves anything. Returns the session (None if it was cancelled meanwhile).
+    Ends a session and marks absent all remaining enrolled students who did not check in.
+    Safe to call multiple times concurrently.
     """
     with transaction.atomic():
-        session = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
-        if session is None or not session.is_active:
-            return session
-        session_id = str(session.id)
-        submissions = redis_service.close_session(session_id)
-        session.is_active = False
-        session.ended_at = timezone.now()
-        session.save(update_fields=['is_active', 'ended_at'])
-        commit_session_to_db(session, submissions)
-        transaction.on_commit(lambda: redis_service.delete_session_cache(session_id))
-    return session
+        locked = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
+        if locked is None or not locked.is_active:
+            return locked
+        locked.is_active = False
+        locked.ended_at = timezone.now()
+        locked.save(update_fields=['is_active', 'ended_at'])
+
+        enrolled = enrolled_memberships(locked.course_info, locked.date).select_related('student')
+        existing_student_ids = set(
+            AttendanceLog.objects.filter(session=locked).values_list('student_id', flat=True)
+        )
+
+        now_time = timezone.localtime().time()
+        source = SOURCE_FOR_MODE.get(locked.mode, AttendanceLog.Source.MANUAL)
+
+        absent_logs = [
+            AttendanceLog(
+                session=locked,
+                course_info=locked.course_info,
+                student=membership.student,
+                date=locked.date,
+                time=now_time,
+                status=AttendanceLog.Status.ABSENT,
+                source=source,
+            )
+            for membership in enrolled
+            if membership.student_id not in existing_student_ids
+        ]
+        if absent_logs:
+            AttendanceLog.objects.bulk_create(absent_logs, ignore_conflicts=True)
+    return locked
 
 
-def session_has_ended(session: AttendanceSession, cache_data: dict | None) -> bool:
+def commit_session_to_db(session: AttendanceSession, submissions: dict):
     """
-    True once check-ins are closed. Without live data (e.g. Redis lost it),
-    trust the database timer instead of treating the session as over.
+    Saves submissions directly to AttendanceLog for a session, and marks remaining enrolled students absent.
+    Used by seeding commands and test helpers.
     """
-    if cache_data is not None:
-        return not redis_service.is_open(cache_data)
+    source = SOURCE_FOR_MODE.get(session.mode, AttendanceLog.Source.QR_ONLINE)
+    students_by_id = {s.student_id: s for s in StudentProfile.objects.all()}
+    now_time = timezone.localtime().time()
+
+    for s_id_str, data in submissions.items():
+        try:
+            s_id = int(s_id_str)
+        except (ValueError, TypeError):
+            continue
+        student = students_by_id.get(s_id)
+        if not student:
+            continue
+        sub_time = data.get('time')
+        if sub_time:
+            log_time = local_datetime(sub_time).time()
+        else:
+            log_time = now_time
+        AttendanceLog.objects.update_or_create(
+            session=session,
+            student=student,
+            defaults={
+                'course_info': session.course_info,
+                'date': session.date,
+                'time': log_time,
+                'status': AttendanceLog.Status.PRESENT,
+                'source': source,
+                'method': data.get('method', AttendanceLog.Method.QR),
+                'device_id': data.get('device_id', ''),
+            }
+        )
+    finalize_session(session)
+
+
+def session_has_ended(session: AttendanceSession, cache_data=None) -> bool:
+    """True once check-ins are closed or duration has expired."""
+    if not session.is_active:
+        return True
     return timezone.now() >= session.started_at + timedelta(seconds=session.duration_seconds)
 
 
-def session_is_live(session: AttendanceSession, cache_data: dict | None) -> bool:
-    return session.is_active and not session_has_ended(session, cache_data)
+def session_is_live(session: AttendanceSession, cache_data=None) -> bool:
+    return session.is_active and not session_has_ended(session)
 
 
-def session_ends_at(session: AttendanceSession, cache_data: dict | None):
-    """When check-ins close (the live timer; the database timer without live data)."""
-    if cache_data is not None:
-        return local_datetime(cache_data['end_time'])
+def session_ends_at(session: AttendanceSession, cache_data=None):
+    """When check-ins close."""
     return timezone.localtime(session.started_at + timedelta(seconds=session.duration_seconds))
 
 
-def session_time_left(session: AttendanceSession, cache_data: dict | None) -> int:
+def session_time_left(session: AttendanceSession, cache_data=None) -> int:
     if not session.is_active:
         return 0
-    return max(0, int((session_ends_at(session, cache_data) - timezone.now()).total_seconds()))
+    return max(0, int((session_ends_at(session) - timezone.now()).total_seconds()))
 
 
-def session_payload(session: AttendanceSession, cache_data: dict | None) -> dict:
-    """The live session as start and the teacher's live lookup return it."""
+def session_payload(session: AttendanceSession, cache_data=None) -> dict:
+    """The live session contract payload."""
     return {
         'id': str(session.id),
         'course_info_id': str(session.course_info_id),
         'delivery': session.delivery,
         'date': session.date.isoformat(),
         'started_at': timezone.localtime(session.started_at).isoformat(),
-        'ends_at': session_ends_at(session, cache_data).isoformat(),
-        'time_left': session_time_left(session, cache_data),
+        'ends_at': session_ends_at(session).isoformat(),
+        'time_left': session_time_left(session),
         'code_period': codes.PERIOD,
     }
 
 
 def finalize_ended_sessions(sessions):
-    """
-    Best-effort background save of active sessions whose timer has run out.
-    A failure (e.g. Redis unreachable) leaves the session for a later request.
-    """
+    """Saves any session whose duration has elapsed."""
     for session in sessions.filter(is_active=True):
         try:
-            if session_has_ended(session, redis_service.get_session_cache(str(session.id))):
+            if session_has_ended(session):
                 finalize_session(session)
         except Exception:
-            logger.exception('Could not save ended attendance session %s', session.id)
+            logger.exception('Could not finalize ended attendance session %s', session.id)
 
 
 def finalize_expired_sessions(course_info):
-    """Saves any session of this course (instance or id) whose timer has run out."""
+    """Saves any session of this course whose timer has run out."""
     finalize_ended_sessions(AttendanceSession.objects.filter(course_info=course_info))
 
 
-def safe_session_cache(session) -> dict | None:
-    """The live data, or None when Redis cannot be reached (then the database timer counts)."""
-    try:
-        return redis_service.get_session_cache(str(session.id))
-    except Exception:
-        logger.exception('Could not read live data of session %s', session.id)
-        return None
-
-
 def live_sessions(sessions) -> list:
-    """[(session, live data)] of the sessions still taking check-ins (ended ones are saved first)."""
+    """[(session, None)] of the sessions still taking check-ins (ended ones are saved first)."""
     finalize_ended_sessions(sessions)
     result = []
     for session in sessions.filter(is_active=True):
-        cache_data = safe_session_cache(session)
-        if session_is_live(session, cache_data):
-            result.append((session, cache_data))
+        if session_is_live(session):
+            result.append((session, None))
     return result
 
 
 def live_session(course_info):
-    """(session, live data) of the course's live session, or (None, None)."""
+    """(session, None) of the course's live session, or (None, None)."""
     found = live_sessions(AttendanceSession.objects.filter(course_info=course_info).select_related('course_info'))
     return found[0] if found else (None, None)
 
 
 def cancel_session(session: AttendanceSession) -> str:
     """
-    Discards a session that has not been saved: the row and its check-ins go, nothing is
-    saved. Returns 'cancelled', 'saved' (already saved: nothing changed) or 'gone'.
+    Discards a session that has not been saved: the row and its logs are removed.
+    Returns 'cancelled', 'saved' (already ended: nothing changed) or 'gone'.
     """
     with transaction.atomic():
         locked = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
@@ -208,9 +267,7 @@ def cancel_session(session: AttendanceSession) -> str:
             return 'gone'
         if not locked.is_active:
             return 'saved'
-        session_id = str(locked.id)
         locked.delete()
-        transaction.on_commit(lambda: redis_service.discard_session(session_id))
     return 'cancelled'
 
 

@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.academic.models import CourseInfo, StudentClassroom
-from apps.attendance.models import AttendanceSession
+from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.records import student_course_detail
 from apps.attendance.services import can_join_live, finalize_expired_sessions, live_sessions, session_ends_at
 from apps.users.models import StudentProfile
@@ -32,18 +32,20 @@ class StudentLiveSessionsView(APIView):
         ).select_related('course_info__course').order_by('started_at')
 
         rows = []
-        for session, cache_data in live_sessions(sessions):
+        for session, _ in live_sessions(sessions):
             if not can_join_live(profile, session):
                 continue
             course = session.course_info.course
-            submissions = (cache_data or {}).get('submissions', {})
+            is_checked_in = AttendanceLog.objects.filter(
+                session=session, student=profile, status=AttendanceLog.Status.PRESENT,
+            ).exists()
             rows.append({
                 'session_id': str(session.id),
                 'course_info_id': str(session.course_info_id),
                 'course': {'code': course.code, 'title': course.title},
                 'delivery': session.delivery,
-                'ends_at': session_ends_at(session, cache_data).isoformat(),
-                'checked_in': str(profile.student_id) in submissions,
+                'ends_at': session_ends_at(session).isoformat(),
+                'checked_in': is_checked_in,
             })
         return Response({'success': True, 'sessions': rows})
 
@@ -64,5 +66,6 @@ class StudentCourseDetailView(APIView):
         )
         if membership is None:
             return error_response('This is not one of your courses.', status=403, code='not_enrolled')
+
         finalize_expired_sessions(ci)
         return Response({'success': True, **student_course_detail(ci, membership)})

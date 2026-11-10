@@ -2,6 +2,7 @@
 Live attendance sessions with the rotating 6-digit code (API v2 section 5) and the
 course history (section 6).
 """
+import datetime as dt
 import re
 import secrets
 import unicodedata
@@ -16,16 +17,17 @@ from rest_framework.views import APIView
 
 from apps.academic.models import CourseInfo, Semester, StudentClassroom
 from apps.academic.serializers import person_name
-from apps.attendance import codes, redis_service
+from apps.attendance import codes
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.records import day_status, log_details, parse_day
 from apps.attendance.serializers import (
     CheckInSerializer, ExtendSessionSerializer, LiveMarkSerializer, StartSessionSerializer,
 )
 from apps.attendance.services import (
-    MAX_SESSION_SECONDS, can_join_live, cancel_session, enrolled_memberships, finalize_expired_sessions,
-    finalize_session, live_sessions, local_datetime, session_ends_at, session_is_live, session_payload,
-    session_time_left,
+    ADDED, ALREADY_CHECKED_IN, CLOSED, DEVICE_USED, MAX_SESSION_SECONDS,
+    can_join_live, cancel_session, enrolled_memberships, finalize_expired_sessions,
+    finalize_session, live_sessions, record_check_in, session_ends_at, session_is_live,
+    session_payload, session_time_left,
 )
 from apps.users.models import StudentProfile
 from apps.users.permissions import IsAdminOrTeacher, IsStudent, can_manage_course, not_your_course_response
@@ -93,47 +95,31 @@ class StartSessionView(APIView):
             return semester_finished_response()
 
         duration = data['duration_minutes'] * 60
-        try:
-            with transaction.atomic():
-                # One start at a time (only this row: no Meta ordering joins under FOR UPDATE)
-                CourseInfo.objects.select_for_update().filter(pk=ci.pk).order_by().first()
-                # Finished meanwhile (read again under the lock)
-                if not Semester.objects.filter(pk=ci.semester_id, is_active=True).exists():
-                    return semester_finished_response()
-                # A live session blocks a new one; an ended one is saved first.
-                for running in AttendanceSession.objects.filter(course_info=ci, is_active=True):
-                    if session_is_live(running, redis_service.get_session_cache(str(running.id))):
-                        return error_response(
-                            'A session is already running for this course.', status=409,
-                            code='session_running', session_id=str(running.id),
-                        )
-                    finalize_session(running)
-
-                # Live data first, so an active session row never exists without it
-                # (otherwise a concurrent lookup could treat the new session as ended).
-                session_id = uuid_lib.uuid4()
-                redis_service.create_session_cache(
-                    session_id=str(session_id), course_info_id=str(ci.id), mode=data['mode'],
-                    duration_seconds=duration,
-                )
-                try:
-                    session = AttendanceSession.objects.create(
-                        id=session_id,
-                        course_info=ci,
-                        date=timezone.localdate(),
-                        mode=data['mode'],
-                        delivery=data['delivery'],
-                        duration_seconds=duration,
-                        qr_token=secrets.token_urlsafe(32) if data['mode'] in QR_MODES else None,
+        with transaction.atomic():
+            # One start at a time (only this row: no Meta ordering joins under FOR UPDATE)
+            CourseInfo.objects.select_for_update().filter(pk=ci.pk).order_by().first()
+            # Finished meanwhile (read again under the lock)
+            if not Semester.objects.filter(pk=ci.semester_id, is_active=True).exists():
+                return semester_finished_response()
+            # A live session blocks a new one; an ended one is saved first.
+            for running in AttendanceSession.objects.filter(course_info=ci, is_active=True):
+                if session_is_live(running):
+                    return error_response(
+                        'A session is already running for this course.', status=409,
+                        code='session_running', session_id=str(running.id),
                     )
-                except Exception:
-                    redis_service.delete_session_cache(str(session_id))
-                    raise
-        except redis_service.SessionBusy:
-            return busy_response()
+                finalize_session(running)
 
-        cache_data = redis_service.get_session_cache(str(session.id))
-        return Response({'success': True, 'session': session_payload(session, cache_data)}, status=201)
+            session = AttendanceSession.objects.create(
+                course_info=ci,
+                date=timezone.localdate(),
+                mode=data['mode'],
+                delivery=data['delivery'],
+                duration_seconds=duration,
+                qr_token=secrets.token_urlsafe(32) if data['mode'] in QR_MODES else None,
+            )
+
+        return Response({'success': True, 'session': session_payload(session)}, status=201)
 
 
 class SessionCodeView(APIView):
@@ -146,13 +132,9 @@ class SessionCodeView(APIView):
             return error
         if not session.qr_token:
             return error_response('This session has no check-in code.', status=400, code='no_code')
-        cache_data = redis_service.get_session_cache(str(session.id))
-        if not session_is_live(session, cache_data):
+        if not session_is_live(session):
             if session.is_active:
-                try:
-                    finalize_session(session)
-                except redis_service.SessionBusy:
-                    pass  # the next status poll saves it
+                finalize_session(session)
             return session_ended_response()
         code, expires_in = codes.current_code(session.qr_token)
         return Response({
@@ -173,13 +155,8 @@ class SessionStatusView(APIView):
         if error:
             return error
 
-        cache_data = redis_service.get_session_cache(str(session.id))
-        if not session_is_live(session, cache_data):
-            # Timer ran out or session was stopped: make sure it is saved
-            try:
-                saved = finalize_session(session)
-            except redis_service.SessionBusy:
-                return busy_response()
+        if not session_is_live(session):
+            saved = finalize_session(session)
             if saved is None:
                 return cancelled_response()
             return Response({
@@ -192,8 +169,12 @@ class SessionStatusView(APIView):
                 ).count(),
             })
 
-        # Live data missing although the timer still runs: nobody is checked in yet
-        submissions = cache_data.get('submissions', {}) if cache_data else {}
+        present_logs = list(
+            AttendanceLog.objects.filter(session=session, status=AttendanceLog.Status.PRESENT)
+            .select_related('student__user')
+        )
+        present_by_student_id = {str(log.student.student_id): log for log in present_logs}
+
         memberships = list(
             enrolled_memberships(session.course_info, session.date)
             .select_related('student__user').order_by('student__student_id')
@@ -201,15 +182,19 @@ class SessionStatusView(APIView):
         checked_in, not_checked_in = [], []
         for membership in memberships:
             student = membership.student
-            submission = submissions.get(str(student.student_id))
-            if submission is None:
+            log = present_by_student_id.get(str(student.student_id))
+            if log is None:
                 not_checked_in.append(student_brief(student))
                 continue
+            log_time_dt = (
+                timezone.make_aware(dt.datetime.combine(log.date, log.time))
+                if log.time else None
+            )
             checked_in.append({
                 **student_brief(student),
-                'time': local_datetime(submission['time']).isoformat() if submission.get('time') else None,
-                'method': submission.get('method') or 'QR',
-                '_at': submission.get('time') or 0,
+                'time': log_time_dt.isoformat() if log_time_dt else None,
+                'method': log.method or 'QR',
+                '_at': log.time or dt.time.min,
             })
         checked_in.sort(key=lambda row: row.pop('_at'), reverse=True)  # newest first
         return Response({
@@ -218,8 +203,8 @@ class SessionStatusView(APIView):
             'session': {
                 'id': str(session.id),
                 'delivery': session.delivery,
-                'ends_at': session_ends_at(session, cache_data).isoformat(),
-                'time_left': session_time_left(session, cache_data),
+                'ends_at': session_ends_at(session).isoformat(),
+                'time_left': session_time_left(session),
                 'total': len(memberships),
                 'checked_in': checked_in,
                 'not_checked_in': not_checked_in,
@@ -240,33 +225,26 @@ class ExtendSessionView(APIView):
             return validation_error_response(serializer.errors)
         seconds = serializer.validated_data['minutes'] * 60
 
-        try:
-            with transaction.atomic():
-                locked = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
-                if locked is None:
-                    return cancelled_response()
-                cache_data = redis_service.get_session_cache(str(locked.id))
-                if not session_is_live(locked, cache_data):
-                    return session_ended_response()
-                total = locked.duration_seconds + seconds
-                if total > MAX_SESSION_SECONDS:
-                    room = (MAX_SESSION_SECONDS - locked.duration_seconds) // 60
-                    message = 'A session can last at most 30 minutes.'
-                    if room > 0:
-                        message += f' You can add up to {room} more minute{"s" if room != 1 else ""}.'
-                    return error_response(message, status=400, code='too_long')
-                if cache_data is not None and redis_service.extend_session(str(locked.id), seconds) is None:
-                    return session_ended_response()
-                locked.duration_seconds = total
-                locked.save(update_fields=['duration_seconds'])
-        except redis_service.SessionBusy:
-            return busy_response()
+        with transaction.atomic():
+            locked = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
+            if locked is None:
+                return cancelled_response()
+            if not session_is_live(locked):
+                return session_ended_response()
+            total = locked.duration_seconds + seconds
+            if total > MAX_SESSION_SECONDS:
+                room = (MAX_SESSION_SECONDS - locked.duration_seconds) // 60
+                message = 'A session can last at most 30 minutes.'
+                if room > 0:
+                    message += f' You can add up to {room} more minute{"s" if room != 1 else ""}.'
+                return error_response(message, status=400, code='too_long')
+            locked.duration_seconds = total
+            locked.save(update_fields=['duration_seconds'])
 
-        cache_data = redis_service.get_session_cache(str(locked.id))
         return Response({
             'success': True,
-            'ends_at': session_ends_at(locked, cache_data).isoformat(),
-            'time_left': session_time_left(locked, cache_data),
+            'ends_at': session_ends_at(locked).isoformat(),
+            'time_left': session_time_left(locked),
         })
 
 
@@ -285,27 +263,18 @@ class LiveMarkView(APIView):
         student = StudentProfile.objects.select_related('user').filter(
             id=serializer.validated_data['profile_id'], user__deleted=False,
         ).first()
-        # Anyone the session will save (enrolled on its date): also a student removed today after
-        # a class, who is still counted today (left_at = tomorrow) but can't check in themselves.
         enrolled = student is not None and enrolled_memberships(session.course_info, session.date).filter(
             student=student,
         ).exists()
         if not enrolled:
             return error_response('This student is not in this course.', status=400, code='not_enrolled')
-        if not session_is_live(session, redis_service.get_session_cache(str(session.id))):
-            return session_ended_response('This session has ended. Change attendance in the course history.')
 
-        try:
-            result = redis_service.add_submission(
-                session_id=str(session.id), student_int_id=student.student_id,
-                student_name=person_name(student.user), method=AttendanceLog.Method.TEACHER,
-                profile_id=str(student.id),
-            )
-        except redis_service.SessionBusy:
-            return busy_response()
-        if result == redis_service.CLOSED:
+        result = record_check_in(
+            session=session, student=student, method=AttendanceLog.Method.TEACHER,
+        )
+        if result == CLOSED:
             return session_ended_response('This session has ended. Change attendance in the course history.')
-        if result == redis_service.ALREADY_CHECKED_IN:
+        if result == ALREADY_CHECKED_IN:
             return error_response(
                 f'{person_name(student.user)} is already checked in.', status=409, code='already_checked_in',
             )
@@ -321,7 +290,7 @@ class LiveMarkView(APIView):
 
 
 class StopSessionView(APIView):
-    """Teacher stops session — commits all Redis submissions to DB."""
+    """Teacher stops session — commits all submissions to DB."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request, uuid):
@@ -329,11 +298,7 @@ class StopSessionView(APIView):
         if error:
             return error
 
-        # Also fine when the timer or a status poll already saved it.
-        try:
-            saved = finalize_session(session)
-        except redis_service.SessionBusy:
-            return busy_response()
+        saved = finalize_session(session)
         if saved is None:
             return cancelled_response()
 
@@ -350,29 +315,29 @@ class StopSessionView(APIView):
 
 
 class CancelSessionView(APIView):
-    """Discards a live session and its check-ins; nothing is saved."""
+    """Teacher discards session — neither the session nor its check-ins stay."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request, uuid):
         session, error = managed_session(request, uuid)
         if error:
             return error
+
         result = cancel_session(session)
         if result == 'gone':
             return cancelled_response()
         if result == 'saved':
             return error_response(
-                'This session was already saved. Delete its date in the course history instead.',
-                status=409, code='session_saved',
+                'This session was already saved and cannot be cancelled.', status=409, code='session_saved',
             )
-        return Response({'success': True, 'message': 'Session cancelled. Nothing was saved.'})
+        return Response({'success': True, 'message': 'Session cancelled.', 'session_id': str(session.id)})
 
 
 class CheckInView(APIView):
     """
-    Student checks in with the code: {code, session_id?, device_id}. With session_id (the
-    QR link) the method is QR; without it (typed code) the student's live session whose
-    current code matches is used and the method is CODE.
+    Student check-in (API v2 section 5).
+    With `session_id` (QR link): QR method, matching code.
+    Without `session_id` (manual code): CODE method, live sessions looked up.
     """
     permission_classes = [IsStudent]
     throttle_classes = [CheckInThrottle]
@@ -401,7 +366,7 @@ class CheckInView(APIView):
                 return session_ended_response()
             if not can_join_live(student, session):
                 return error_response('You are not in this course.', status=403, code='not_enrolled')
-            if not session_is_live(session, redis_service.get_session_cache(str(session.id))):
+            if not session_is_live(session):
                 return session_ended_response()
             if not CODE_PATTERN.match(code) or not codes.code_matches(session.qr_token, code):
                 return code_invalid_response()
@@ -419,19 +384,17 @@ class CheckInView(APIView):
                     )
                 return code_invalid_response()
 
-        try:
-            result = redis_service.add_submission(
-                session_id=str(session.id), student_int_id=student.student_id,
-                student_name=person_name(student.user), method=method,
-                device_id=data['device_id'], profile_id=str(student.id),
-            )
-        except redis_service.SessionBusy:
-            return busy_response()
-        if result == redis_service.CLOSED:
+        result = record_check_in(
+            session=session,
+            student=student,
+            method=method,
+            device_id=data['device_id'],
+        )
+        if result == CLOSED:
             return session_ended_response()
-        if result == redis_service.ALREADY_CHECKED_IN:
+        if result == ALREADY_CHECKED_IN:
             return error_response('You are already checked in.', status=409, code='already_checked_in')
-        if result == redis_service.DEVICE_USED:
+        if result == DEVICE_USED:
             return error_response(
                 'This device was already used to check in another student in this session.',
                 status=409, code='device_used',
@@ -466,6 +429,9 @@ class CheckInView(APIView):
             student=student, classroom__deleted=False,
             classroom__semester__is_active=True, classroom__semester__deleted=False,
         ).current().exists()
+
+
+StudentCheckInView = CheckInView
 
 
 def code_invalid_response():

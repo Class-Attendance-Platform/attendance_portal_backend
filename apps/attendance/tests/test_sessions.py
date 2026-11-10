@@ -11,7 +11,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.academic.models import Semester, StudentClassroom
-from apps.attendance import codes, redis_service
+from apps.attendance import codes, services
 from apps.attendance.models import AttendanceLog, AttendanceSession
 from apps.attendance.services import _lock_course, finalize_session
 from apps.attendance.tests.helpers import (
@@ -178,14 +178,14 @@ class CheckInTests(LiveTestCase):
         self.assertEqual(res.data['message'], 'Checked in to CSE301.')
         self.assertEqual(res.data['course'], {'code': 'CSE301', 'title': 'Course CSE301'})
         self.assertIn('+06:00', res.data['time'])
-        submission = redis_service.get_submissions(self.session_id)['2302001']
-        self.assertEqual((submission['method'], submission['device_id']), ('QR', 'device-2302001'))
+        log = self.log_of(self.session_id, self.student_a)
+        self.assertEqual((log.status, log.method, log.device_id), ('PRESENT', 'QR', 'device-2302001'))
         self.assertFalse(DeviceBinding.objects.exists())  # no permanent binding
 
     def test_typed_code_finds_the_students_live_session(self):
         res = check_in(self.student_a, code=current_code(self.session_id))
         self.assertEqual(res.status_code, 200, res.data)
-        self.assertEqual(redis_service.get_submissions(self.session_id)['2302001']['method'], 'CODE')
+        self.assertEqual(self.log_of(self.session_id, self.student_a).method, 'CODE')
 
     def test_previous_code_still_works_older_ones_do_not(self):
         token = AttendanceSession.objects.get(id=self.session_id).qr_token
@@ -206,7 +206,7 @@ class CheckInTests(LiveTestCase):
                     check_in(self.student_a, self.session_id, code='12ab')):
             self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
             self.assertEqual(res.data['message'], 'This code is wrong or has expired. Check the newest code.')
-        self.assertEqual(redis_service.get_submissions(self.session_id), {})
+        self.assertFalse(AttendanceLog.objects.filter(session_id=self.session_id).exists())
 
     def test_code_with_spaces_is_accepted(self):
         code = current_code(self.session_id)
@@ -219,7 +219,7 @@ class CheckInTests(LiveTestCase):
         bengali = code.translate(BENGALI_DIGITS)
         res = check_in(self.student_b, code=f'{bengali[:3]} {bengali[3:]}')  # typed, with a space
         self.assertEqual(res.status_code, 200, res.data)
-        self.assertEqual(redis_service.get_submissions(self.session_id)['2302002']['method'], 'CODE')
+        self.assertEqual(self.log_of(self.session_id, self.student_b).method, 'CODE')
 
     def test_wrong_code_in_other_digits_is_code_invalid(self):
         wrong = ('000000' if current_code(self.session_id) != '000000' else '111111').translate(BENGALI_DIGITS)
@@ -229,7 +229,7 @@ class CheckInTests(LiveTestCase):
                     check_in(self.student_a, code=fullwidth),
                     check_in(self.student_a, self.session_id, code='১২৩৪৫²')):  # ² is not a decimal digit
             self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
-        self.assertEqual(redis_service.get_submissions(self.session_id), {})
+        self.assertFalse(AttendanceLog.objects.filter(session_id=self.session_id).exists())
 
     def test_course_of_a_deleted_semester(self):
         Semester.objects.filter(id=self.ci.semester_id).update(deleted=True)
@@ -238,7 +238,7 @@ class CheckInTests(LiveTestCase):
         # Their only semester is deleted: they are on no class list now
         res = check_in(self.student_a, code=current_code(self.session_id))
         self.assertEqual((res.status_code, res.data['code']), (403, 'not_enrolled'))
-        self.assertEqual(redis_service.get_submissions(self.session_id), {})
+        self.assertFalse(AttendanceLog.objects.filter(session_id=self.session_id).exists())
 
     def test_student_not_in_class(self):
         outsider = make_student('c@example.com', 2302003)
@@ -256,7 +256,7 @@ class CheckInTests(LiveTestCase):
         make_course_info(self.teacher, 'CSE401', students=[other])
         res = check_in(other, code=current_code(self.session_id))
         self.assertEqual((res.status_code, res.data['code']), (400, 'code_invalid'))
-        self.assertEqual(redis_service.get_submissions(self.session_id), {})
+        self.assertFalse(AttendanceLog.objects.filter(session_id=self.session_id).exists())
 
     def test_typed_code_after_leaving_or_when_only_in_a_finished_semester(self):
         StudentClassroom.objects.filter(student=self.student_b).update(left_at='2026-01-01')
@@ -283,7 +283,7 @@ class CheckInTests(LiveTestCase):
         self.assertEqual(check_in(self.student_a, self.session_id, device_id='phone-1').status_code, 200)
         res = check_in(self.student_b, self.session_id, device_id='phone-1')
         self.assertEqual((res.status_code, res.data['code']), (409, 'device_used'))
-        self.assertNotIn('2302002', redis_service.get_submissions(self.session_id))
+        self.assertFalse(AttendanceLog.objects.filter(session_id=self.session_id, student=self.student_b).exists())
         # The same phone works again in the next session (no permanent binding)
         self.teacher_client.post(f'/api/sessions/{self.session_id}/stop/')
         next_session = self.start()
@@ -311,11 +311,6 @@ class CheckInTests(LiveTestCase):
             'code': current_code(self.session_id), 'session_id': self.session_id, 'device_id': 'x',
         }, format='json')
         self.assertEqual(res.status_code, 403)
-
-    def test_returns_503_when_too_busy(self):
-        with mock.patch.object(redis_service, 'add_submission', side_effect=redis_service.SessionBusy):
-            res = check_in(self.student_a, self.session_id)
-        self.assertEqual(res.status_code, 503)
 
     def test_old_endpoints_are_gone(self):
         student = client_for(self.student_a.user)
@@ -357,9 +352,8 @@ class StatusTests(LiveTestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(AttendanceLog.objects.filter(session_id=session_id).count(), 2)
 
-    def test_status_without_live_data_but_timer_running_stays_active(self):
+    def test_status_when_no_checkins_yet_stays_active(self):
         session_id = self.start()
-        redis_service.delete_session_cache(session_id)
         res = self.teacher_client.get(f'/api/sessions/{session_id}/status/')
         self.assertTrue(res.data['active'])
         self.assertGreater(res.data['session']['time_left'], 0)
@@ -378,7 +372,7 @@ class StopTests(LiveTestCase):
         self.assertEqual((present.status, present.method, present.source), ('PRESENT', 'CODE', 'QR_ONLINE'))
         self.assertEqual((absent.status, absent.method, absent.source), ('ABSENT', '', 'QR_ONLINE'))
         self.assertIsNotNone(present.time)
-        self.assertIsNone(redis_service.get_session_cache(session_id))
+        self.assertFalse(AttendanceSession.objects.get(id=session_id).is_active)
 
     def test_stop_after_timer_ends_keeps_checkins(self):
         session_id = self.start()
@@ -395,19 +389,6 @@ class StopTests(LiveTestCase):
         finalize_session(session)
         self.assertEqual(AttendanceLog.objects.filter(session=session).count(), 2)
 
-    def test_old_live_data_without_methods_is_saved(self):
-        """A session running during the upgrade has check-ins without method/time."""
-        session_id = self.start()
-        key = redis_service._key(session_id)
-        import json
-        data = json.loads(cache.get(key))
-        data['submissions'] = {'2302001': {'name': 'Ana', 'mac': 'web01'}}
-        del data['devices']
-        cache.set(key, json.dumps(data), timeout=600)
-        self.teacher_client.post(f'/api/sessions/{session_id}/stop/')
-        log = self.log_of(session_id, self.student_a)
-        self.assertEqual((log.status, log.method), ('PRESENT', 'QR'))
-
 
 class ExtendTests(LiveTestCase):
     def test_extend_moves_the_end(self):
@@ -416,7 +397,7 @@ class ExtendTests(LiveTestCase):
         self.assertEqual(res.status_code, 200, res.data)
         self.assertTrue(415 <= res.data['time_left'] <= 420)
         self.assertEqual(AttendanceSession.objects.get(id=session_id).duration_seconds, 420)
-        self.assertTrue(415 <= redis_service.time_left(session_id) <= 420)
+        self.assertTrue(415 <= services.session_time_left(AttendanceSession.objects.get(id=session_id)) <= 420)
         status = self.teacher_client.get(f'/api/sessions/{session_id}/status/').data['session']
         self.assertEqual(status['ends_at'], res.data['ends_at'])
 
@@ -439,15 +420,10 @@ class ExtendTests(LiveTestCase):
         self.assertEqual((res.status_code, res.data['code']), (410, 'session_ended'))
 
     def test_check_ins_stay_open_after_extending(self):
-        session_id = self.start()
-        key = redis_service._key(session_id)
-        import json
-        data = json.loads(cache.get(key))
-        data['end_time'] = time.time() + 1
-        cache.set(key, json.dumps(data), timeout=600)
-        self.teacher_client.post(f'/api/sessions/{session_id}/extend/', {'minutes': 2}, format='json')
-        with mock.patch('time.time', return_value=time.time() + 30):
-            self.assertTrue(redis_service.is_open(redis_service.get_session_cache(session_id)))
+        session_id = self.start(duration_minutes=2)
+        self.teacher_client.post(f'/api/sessions/{session_id}/extend/', {'minutes': 5}, format='json')
+        session = AttendanceSession.objects.get(id=session_id)
+        self.assertTrue(services.session_is_live(session))
 
 
 class LiveMarkTests(LiveTestCase):
@@ -479,7 +455,7 @@ class LiveMarkTests(LiveTestCase):
             res = self.teacher_client.post(f'/api/sessions/{session_id}/mark/', {'profile_id': str(student.id)},
                                            format='json')
             self.assertEqual((res.status_code, res.data['code']), (400, 'not_enrolled'))
-        self.assertEqual(redis_service.get_submissions(session_id), {})
+        self.assertFalse(AttendanceLog.objects.filter(session_id=session_id).exists())
 
     def test_a_student_removed_today_after_a_class_can_still_be_marked(self):
         # Removed after this morning's class: left_at = tomorrow, so today still counts for them
@@ -512,7 +488,6 @@ class CancelTests(LiveTestCase):
         self.assertEqual(res.status_code, 200)
         self.assertFalse(AttendanceSession.objects.exists())
         self.assertFalse(AttendanceLog.objects.exists())
-        self.assertIsNone(redis_service.get_session_cache(session_id))
         self.assertEqual(self.teacher_client.get(f'/api/sessions/{session_id}/status/').status_code, 404)
 
     def test_a_saved_session_cannot_be_cancelled(self):
@@ -580,8 +555,9 @@ class StudentLiveListTests(LiveTestCase):
 class FingerprintSessionTests(LiveTestCase):
     def test_fingerprint_logs_use_hardware_source(self):
         session_id = self.start(mode='FINGERPRINT')
-        result = redis_service.add_submission(session_id, self.student_a.student_id, 'Ana', 'FINGERPRINT')
-        self.assertEqual(result, redis_service.ADDED)
+        session = AttendanceSession.objects.get(id=session_id)
+        result = services.record_check_in(session, self.student_a, 'FINGERPRINT')
+        self.assertEqual(result, services.ADDED)
         self.teacher_client.post(f'/api/sessions/{session_id}/stop/')
         log = self.log_of(session_id, self.student_a)
         self.assertEqual((log.status, log.source, log.method), ('PRESENT', 'HARDWARE', 'FINGERPRINT'))
@@ -613,7 +589,7 @@ class TeacherOwnershipTests(TestCase):
             res = self.other_client.post(f'/api/sessions/{session_id}/{path}/', body, format='json')
             self.assertEqual(res.status_code, 403, path)
         self.assertTrue(AttendanceSession.objects.get(id=session_id).is_active)
-        self.assertEqual(redis_service.get_submissions(session_id), {})
+        self.assertFalse(AttendanceLog.objects.filter(session_id=session_id).exists())
 
     def test_other_teacher_cannot_read_or_edit_course(self):
         ci = self.ci.id
@@ -647,35 +623,24 @@ class TeacherOwnershipTests(TestCase):
         self.assertIn('2302001', res.content.decode())
 
 
-class SimultaneousCheckinTests(TestCase):
-    def test_no_checkin_is_lost_when_many_arrive_at_once(self):
-        import threading
-
-        cache.clear()
-        session_id = 'concurrency-test'
-        redis_service.create_session_cache(session_id, 'ci', 'QR_ONLINE', 60)
-
-        threads = [
-            threading.Thread(
-                target=redis_service.add_submission,
-                args=(session_id, 2302000 + i, 'S', 'QR', f'device-{i}', str(uuid.uuid4())),
-            )
-            for i in range(40)
+class CheckinIntegrityTests(LiveTestCase):
+    def test_multiple_checkins_saved_directly_to_database(self):
+        session_id = self.start()
+        session = AttendanceSession.objects.get(id=session_id)
+        students = [
+            make_student(f'student{i}@example.com', 2303000 + i)
+            for i in range(10)
         ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        data = redis_service.get_session_cache(session_id)
-        self.assertEqual(len(data['submissions']), 40)
-        self.assertEqual(len(data['devices']), 40)
+        for i, s in enumerate(students):
+            res = services.record_check_in(session, s, 'QR', f'device-{i}')
+            self.assertEqual(res, services.ADDED)
+        self.assertEqual(AttendanceLog.objects.filter(session=session, status='PRESENT').count(), 10)
 
 
 class SessionEdgeCaseTests(LiveTestCase):
-    """Cases found in review: start races, busy locks, Redis trouble."""
+    """Cases found in review: start races and timer transitions."""
 
-    def test_lookup_while_session_has_no_live_data_yet_keeps_it_running(self):
+    def test_lookup_while_session_has_no_checkins_yet_keeps_it_running(self):
         session = AttendanceSession.objects.create(
             course_info=self.ci, date='2026-10-05', mode='QR_ONLINE', duration_seconds=60, qr_token='t',
         )
@@ -684,17 +649,6 @@ class SessionEdgeCaseTests(LiveTestCase):
         session.refresh_from_db()
         self.assertTrue(session.is_active)
         self.assertFalse(AttendanceLog.objects.exists())
-
-    def test_course_pages_still_load_when_redis_fails(self):
-        session_id = self.start()
-        with mock.patch.object(redis_service, 'get_session_cache', side_effect=ConnectionError('redis down')), \
-                self.assertLogs('apps.attendance.services', level='ERROR'):
-            res = self.teacher_client.get(f'/api/teacher/course-info/{self.ci.id}/')
-            self.assertEqual(res.status_code, 200)
-            self.assertEqual(res.data['course']['live_session_id'], session_id)  # the database timer runs
-            res = client_for(self.student_a.user).get('/api/student/live/')
-            self.assertEqual(res.status_code, 200)
-        self.assertTrue(AttendanceSession.objects.get(id=session_id).is_active)
 
     def test_opening_the_teacher_dashboard_saves_ended_sessions(self):
         session_id = self.start()

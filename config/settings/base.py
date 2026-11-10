@@ -152,26 +152,14 @@ SIMPLE_JWT = {
     'TOKEN_REFRESH_SERIALIZER': 'apps.users.jwt.PasswordCheckedRefreshSerializer',
 }
 
-# ── Redis ─────────────────────────────────────────────────────────────────────
-REDIS_URL = config('REDIS_URL', default='redis://localhost:6379/0')
-if REDIS_URL in ('', 'locmem', 'memory'):
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        }
+# ── Cache ─────────────────────────────────────────────────────────────────────
+# In-memory cache for DRF rate limiting throttles. No external Redis needed.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'attendance-portal-cache',
     }
-else:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django_redis.cache.RedisCache',
-            'LOCATION': REDIS_URL,
-            'OPTIONS': {
-                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-                # TLS (rediss://, e.g. Upstash) needs this; a plain local redis:// must not get it
-                'CONNECTION_POOL_KWARGS': {'ssl_cert_reqs': None} if REDIS_URL.startswith('rediss://') else {},
-            }
-        }
-    }
+}
 
 # ── App ───────────────────────────────────────────────────────────────────────
 # Public address of the web app: links in emails and QR codes (no trailing slash)

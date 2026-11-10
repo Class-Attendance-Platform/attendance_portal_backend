@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
@@ -27,13 +28,26 @@ class AttendanceSession(models.Model):
     started_at     = models.DateTimeField(auto_now_add=True)
     ended_at       = models.DateTimeField(null=True, blank=True)
     is_active      = models.BooleanField(default=True)
-    # Total length, extensions included (the live timer is in Redis; this is the fallback)
     duration_seconds = models.PositiveIntegerField(default=300)
     # Secret behind the rotating 6-digit check-in code (null for FINGERPRINT mode); never sent to students
     qr_token       = models.CharField(max_length=255, null=True, blank=True, unique=True)
 
     class Meta:
         ordering = ['-started_at']
+
+    @property
+    def ends_at(self):
+        return timezone.localtime(self.started_at + timedelta(seconds=self.duration_seconds))
+
+    @property
+    def time_left(self) -> int:
+        if not self.is_active:
+            return 0
+        return max(0, int((self.ends_at - timezone.now()).total_seconds()))
+
+    @property
+    def is_live(self) -> bool:
+        return self.is_active and timezone.now() < self.started_at + timedelta(seconds=self.duration_seconds)
 
     def __str__(self):
         return f'{self.course_info} | {self.date} | {self.mode}'
@@ -75,6 +89,7 @@ class AttendanceLog(models.Model):
     status      = models.CharField(max_length=10, choices=Status.choices, default=Status.PRESENT)
     source      = models.CharField(max_length=15, choices=Source.choices, default=Source.MANUAL)
     method      = models.CharField(max_length=12, choices=Method.choices, blank=True, default='')
+    device_id   = models.CharField(max_length=255, blank=True, default='')
     is_modified_by_teacher = models.BooleanField(default=False)
     # The last correction (the full trail is in AttendanceChange)
     changed_by  = models.ForeignKey(

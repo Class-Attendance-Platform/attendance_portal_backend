@@ -47,7 +47,7 @@ Demo logins: `admin@demo.local`, `teacher@demo.local`, `teacher2@demo.local`,
 Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
 
 ## Code map
-- `config/settings/` `base.py` (Postgres + Redis from `.env` via python-decouple), `development.py`
+- `config/settings/` `base.py` (Postgres from `.env` via python-decouple), `development.py`
   (default), `production.py` (server: env `ALLOWED_HOSTS`/`CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS`,
   whitenoise for DRF's static files, HTTPS via nginx's `X-Forwarded-Proto`, HSTS on by default), `test.py`.
   `.env.example` lists the server's `.env` keys (also email, `WEB_URL`, app versions, throttle rates).
@@ -105,16 +105,15 @@ Admins are never created by sign-up: use `createsuperuser` (role `ADMIN`).
   code secret, never sent out), AttendanceLog (one row per student per class; unique per
   session+student; `method` QR/CODE/FACE/TEACHER/FINGERPRINT or '' = not checked in; `changed_by`/
   `changed_at` = last correction) and AttendanceChange (correction trail).
-  - Live flow: `start` writes the Redis entry first, then the session row → check-ins go to Redis
-    (`redis_service.py`, locked read-modify-write; submissions keep method, time and device id, plus a
-    device → student map: one phone, one student per session; `SessionBusy` → HTTP 503) →
-    `services.finalize_session()` saves PRESENT/ABSENT logs exactly once. It runs on stop, on a status
-    poll after the timer, and best-effort via `finalize_expired_sessions()` / `finalize_ended_sessions()`
-    / `live_sessions()` (teacher course list and detail, history, export, live lookups, next start).
-    Check-ins close at `end_time` (extend moves it; 30 min total); Redis data is kept 7 days. With no
-    Redis data, `session_has_ended()` trusts the database timer (`started_at + duration_seconds`).
-    Cancel deletes an unsaved session. `codes.py`: the rotating 6-digit code (30 s windows, current +
-    previous accepted) and the QR link `{WEB_URL}/check-in?s=&c=`.
+  - Live flow: `start` writes the session row directly to PostgreSQL → check-ins are recorded
+    directly to `AttendanceLog` (`services.record_check_in`, atomic transaction; logs store method, time,
+    and device id; enforces one phone, one student per session) → `services.finalize_session()`
+    marks all unsubmitted enrolled students as ABSENT. It runs on stop, on a status poll after the timer,
+    and best-effort via `finalize_expired_sessions()` / `finalize_ended_sessions()` / `live_sessions()`
+    (teacher course list and detail, history, export, live lookups, next start).
+    Check-ins close when `session_has_ended()` is reached (`started_at + duration_seconds`; extend moves it;
+    30 min total). Cancel deletes an unsaved session and its check-in logs. `codes.py`: the rotating 6-digit
+    code (30 s windows, current + previous accepted) and the QR link `{WEB_URL}/check-in?s=&c=`.
   - Students check in only for themselves (`/sessions/check-in/`), only as current members enrolled
     on the session's date; teachers can only mark such students.
   - `records.py`: reading by day (day status, method, `classes_needed`, student days, the student's

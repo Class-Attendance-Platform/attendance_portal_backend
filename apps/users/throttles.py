@@ -1,8 +1,8 @@
 """
 Request limits (API v2 conventions). Rates live in settings (REST_FRAMEWORK
-DEFAULT_THROTTLE_RATES, overridable from .env); counts are kept in the cache (Redis).
+DEFAULT_THROTTLE_RATES, overridable from .env); counts are kept in the cache (LocMemCache).
 When the cache cannot be reached the limits are skipped (logged), so signing in never
-depends on Redis.
+depends on external services.
 """
 import hashlib
 import logging
@@ -42,7 +42,7 @@ class IPAndEmailRateThrottle(IPRateThrottle):
         # upper() first, as the database matches emails (UPPER(email) = UPPER(%s)): 'ſ' and 'ı'
         # would otherwise make separate counts for the same account.
         email = str(data.get('email', '') if isinstance(data, dict) else '').strip().upper().lower()
-        # A digest, not the email itself: a huge made-up email must not become a huge Redis key.
+        # A digest, not the email itself: a huge made-up email must not become a huge cache key.
         digest = hashlib.sha256(email.encode('utf-8', 'surrogatepass')).hexdigest()[:32]
         return self.cache_format % {'scope': self.scope, 'ident': f'{self.get_ident(request)}:{digest}'}
 

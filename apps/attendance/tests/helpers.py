@@ -1,12 +1,11 @@
 """Shared test helpers: tiny factories for users, courses and live sessions."""
-import json
-import time
+from datetime import timedelta
 
-from django.core.cache import cache
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.academic.models import Classroom, Course, CourseInfo, Semester, StudentClassroom
-from apps.attendance import redis_service
+from apps.attendance.models import AttendanceSession
 from apps.users.models import AdminProfile, StudentProfile, TeacherProfile, User
 
 PASSWORD = 'Test-pass-123'
@@ -70,10 +69,9 @@ def client_for(user):
 
 def expire_session(session_id):
     """Move a live session's end time into the past, as if the timer ran out."""
-    key = redis_service._key(str(session_id))
-    data = json.loads(cache.get(key))
-    data['end_time'] = time.time() - 1
-    cache.set(key, json.dumps(data), timeout=3600)
+    session = AttendanceSession.objects.get(id=session_id)
+    session.started_at = timezone.now() - timedelta(seconds=session.duration_seconds + 5)
+    session.save(update_fields=['started_at'])
 
 
 def start_session(client, course_info, **body):
@@ -85,7 +83,6 @@ def start_session(client, course_info, **body):
 def current_code(session_id):
     """The session's current 6-digit code (what the teacher's screen shows)."""
     from apps.attendance import codes
-    from apps.attendance.models import AttendanceSession
     return codes.current_code(AttendanceSession.objects.get(id=session_id).qr_token)[0]
 
 
