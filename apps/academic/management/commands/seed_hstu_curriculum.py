@@ -16,7 +16,7 @@ from django.utils import timezone
 from apps.academic.models import Classroom, Course, CourseInfo, Semester, StudentClassroom
 from apps.academic.services import main_classroom
 from apps.users.constants import DEPARTMENT, FACULTY
-from apps.users.models import StudentProfile, TeacherProfile, User
+from apps.users.models import AdminProfile, StudentProfile, TeacherProfile, User
 
 DEFAULT_PASSWORD = 'HstuCse@2026'
 
@@ -262,6 +262,7 @@ class Command(BaseCommand):
 
         hashed_password = make_password(password)
         with transaction.atomic():
+            admin_user = self._seed_admin(hashed_password)
             courses_created, courses_updated = self._seed_courses()
             teachers_created = self._seed_teachers(hashed_password)
             semesters_ready, classrooms_ready, course_infos_created, students_enrolled = self._seed_academic_structure(
@@ -458,3 +459,23 @@ class Command(BaseCommand):
             pending_students += 1
 
         return pending_teachers, pending_students
+
+    def _seed_admin(self, hashed_password):
+        admin_email = 'admin@hstu.ac.bd'
+        user = User.objects.filter(email=admin_email).first()
+        if not user:
+            user = User.objects.create(
+                email=admin_email,
+                username=admin_email,
+                password=hashed_password,
+                role=User.Role.ADMIN,
+                first_name='System',
+                last_name='Administrator',
+                faculty=FACULTY,
+                department=DEPARTMENT,
+                is_staff=True,
+                is_superuser=True,
+                is_verified=True,
+            )
+        AdminProfile.objects.get_or_create(user=user)
+        return user
