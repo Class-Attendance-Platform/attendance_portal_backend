@@ -10,6 +10,7 @@ Usage:
 from datetime import timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
+from django.contrib.auth.hashers import make_password
 from django.utils import timezone
 
 from apps.academic.models import Classroom, Course, CourseInfo, Semester, StudentClassroom
@@ -259,13 +260,14 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING('\n[DRY RUN] No changes were written. Run with --apply to commit.'))
             return
 
+        hashed_password = make_password(password)
         with transaction.atomic():
             courses_created, courses_updated = self._seed_courses()
-            teachers_created = self._seed_teachers(password)
+            teachers_created = self._seed_teachers(hashed_password)
             semesters_ready, classrooms_ready, course_infos_created, students_enrolled = self._seed_academic_structure(
-                students_per_batch, password
+                students_per_batch, hashed_password
             )
-            pending_teachers, pending_students = self._seed_pending_users(password)
+            pending_teachers, pending_students = self._seed_pending_users(hashed_password)
 
         self.stdout.write(self.style.SUCCESS('\n✓ Successfully seeded HSTU CSE 2017 Curriculum Data:'))
         self.stdout.write(f'  - Courses: {courses_created} created, {courses_updated} existing verified')
@@ -297,32 +299,32 @@ class Command(BaseCommand):
                 updated_count += 1
         return created_count, updated_count
 
-    def _seed_teachers(self, password):
+    def _seed_teachers(self, hashed_password):
         count = 0
         for email, first, last, designation, emp_id in HSTU_CSE_TEACHERS:
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    'username': email,
-                    'role': User.Role.TEACHER,
-                    'first_name': first,
-                    'last_name': last,
-                    'faculty': FACULTY,
-                    'department': DEPARTMENT,
-                    'is_verified': True,
-                }
-            )
-            if created:
-                user.set_password(password)
-                user.save()
-            TeacherProfile.objects.get_or_create(
-                user=user,
-                defaults={'employee_id': emp_id}
-            )
+            user = User.objects.filter(email=email).first()
+            if not user:
+                user = User.objects.create(
+                    email=email,
+                    username=email,
+                    password=hashed_password,
+                    role=User.Role.TEACHER,
+                    first_name=first,
+                    last_name=last,
+                    faculty=FACULTY,
+                    department=DEPARTMENT,
+                    is_verified=True,
+                )
+            tp = TeacherProfile.objects.filter(user=user).first()
+            if not tp:
+                TeacherProfile.objects.get_or_create(
+                    user=user,
+                    defaults={'employee_id': emp_id}
+                )
             count += 1
         return count
 
-    def _seed_academic_structure(self, students_per_batch, password):
+    def _seed_academic_structure(self, students_per_batch, hashed_password):
         today = timezone.localdate()
         teachers = list(TeacherProfile.objects.filter(user__department=DEPARTMENT, user__deleted=False))
 
@@ -371,26 +373,29 @@ class Command(BaseCommand):
                 last = LAST_NAMES[(year_prefix * 5 + roll) % len(LAST_NAMES)]
                 email = f'student{student_id}@hstu.ac.bd'
 
-                s_user, u_created = User.objects.get_or_create(
-                    email=email,
-                    defaults={
-                        'username': email,
-                        'role': User.Role.STUDENT,
-                        'first_name': first,
-                        'last_name': last,
-                        'faculty': FACULTY,
-                        'department': DEPARTMENT,
-                        'is_verified': True,
-                    }
-                )
-                if u_created:
-                    s_user.set_password(password)
-                    s_user.save()
-
-                student_profile, _ = StudentProfile.objects.get_or_create(
-                    user=s_user,
-                    defaults={'student_id': student_id, 'current_level': level, 'current_semester': term}
-                )
+                student_profile = StudentProfile.objects.filter(student_id=student_id).first()
+                if not student_profile:
+                    s_user = User.objects.filter(email=email).first()
+                    if not s_user:
+                        s_user = User.objects.create(
+                            email=email,
+                            username=email,
+                            password=hashed_password,
+                            role=User.Role.STUDENT,
+                            first_name=first,
+                            last_name=last,
+                            faculty=FACULTY,
+                            department=DEPARTMENT,
+                            is_verified=True,
+                        )
+                    student_profile = StudentProfile.objects.filter(user=s_user).first()
+                    if not student_profile:
+                        student_profile = StudentProfile.objects.create(
+                            user=s_user,
+                            student_id=student_id,
+                            current_level=level,
+                            current_semester=term,
+                        )
 
                 StudentClassroom.objects.get_or_create(
                     student=student_profile,
@@ -401,55 +406,55 @@ class Command(BaseCommand):
 
         return semesters_count, classrooms_count, course_infos_count, students_count
 
-    def _seed_pending_users(self, password):
+    def _seed_pending_users(self, hashed_password):
         pending_teachers = 0
         for email, first, last, emp_id in PENDING_TEACHERS:
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    'username': email,
-                    'role': User.Role.TEACHER,
-                    'first_name': first,
-                    'last_name': last,
-                    'faculty': FACULTY,
-                    'department': DEPARTMENT,
-                    'is_verified': False,
-                }
-            )
-            if created:
-                user.set_password(password)
-                user.save()
-            TeacherProfile.objects.get_or_create(
-                user=user,
-                defaults={'employee_id': emp_id}
-            )
+            user = User.objects.filter(email=email).first()
+            if not user:
+                user = User.objects.create(
+                    email=email,
+                    username=email,
+                    password=hashed_password,
+                    role=User.Role.TEACHER,
+                    first_name=first,
+                    last_name=last,
+                    faculty=FACULTY,
+                    department=DEPARTMENT,
+                    is_verified=False,
+                )
+            tp = TeacherProfile.objects.filter(user=user).first()
+            if not tp:
+                TeacherProfile.objects.get_or_create(
+                    user=user,
+                    defaults={'employee_id': emp_id}
+                )
             pending_teachers += 1
 
         pending_students = 0
         for email, sid, first, last, level, term in PENDING_STUDENTS:
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    'username': email,
-                    'role': User.Role.STUDENT,
-                    'first_name': first,
-                    'last_name': last,
-                    'faculty': FACULTY,
-                    'department': DEPARTMENT,
-                    'is_verified': False,
-                }
-            )
-            if created:
-                user.set_password(password)
-                user.save()
-            StudentProfile.objects.get_or_create(
-                user=user,
-                defaults={
-                    'student_id': sid,
-                    'current_level': level,
-                    'current_semester': term,
-                }
-            )
+            student_profile = StudentProfile.objects.filter(student_id=sid).first()
+            if not student_profile:
+                user = User.objects.filter(email=email).first()
+                if not user:
+                    user = User.objects.create(
+                        email=email,
+                        username=email,
+                        password=hashed_password,
+                        role=User.Role.STUDENT,
+                        first_name=first,
+                        last_name=last,
+                        faculty=FACULTY,
+                        department=DEPARTMENT,
+                        is_verified=False,
+                    )
+                student_profile = StudentProfile.objects.filter(user=user).first()
+                if not student_profile:
+                    student_profile = StudentProfile.objects.create(
+                        user=user,
+                        student_id=sid,
+                        current_level=level,
+                        current_semester=term,
+                    )
             pending_students += 1
 
         return pending_teachers, pending_students
