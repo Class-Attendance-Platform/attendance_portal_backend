@@ -58,6 +58,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
+PORT = config('PORT', default=8000, cast=int)
 
 DATABASES = {
     'default': {
