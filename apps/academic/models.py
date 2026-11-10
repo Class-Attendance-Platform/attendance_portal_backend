@@ -46,6 +46,7 @@ def sort_semesters(semesters):
 
 class Course(models.Model):
     class Credits(models.TextChoices):
+        CREDIT_0_75 = 'CREDIT_0_75', '0.75'
         CREDIT_1_00 = 'CREDIT_1_00', '1.00'
         CREDIT_1_50 = 'CREDIT_1_50', '1.50'
         CREDIT_2_00 = 'CREDIT_2_00', '2.00'

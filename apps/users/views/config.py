@@ -8,6 +8,7 @@ from apps.users.services import email_reset_enabled
 
 
 CREDIT_ENUM_MAP = {
+    '0.75': 'CREDIT_0_75',
     '1.00': 'CREDIT_1_00',
     '1.50': 'CREDIT_1_50',
     '2.00': 'CREDIT_2_00',
