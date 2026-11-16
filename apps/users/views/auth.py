@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import update_last_login
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -8,6 +8,8 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.faces import services as face_services
+from apps.faces.views import run_face_task
 from apps.users.serializers import (
     LoginSerializer, MeUpdateSerializer, NewAccountSerializer, PasswordChangeSerializer,
     PasswordForgotSerializer, PasswordResetSerializer, password_errors, user_data,
@@ -59,6 +61,17 @@ class LoginView(PublicView):
         return Response({'success': True, **tokens_for(user), 'user': user_data(user)})
 
 
+class RegisterCheckView(PublicView):
+    """Validates sign-up details before a student opens the camera for face capture."""
+    throttle_classes = [RegisterThrottle, RegisterIPThrottle]
+
+    def post(self, request):
+        serializer = NewAccountSerializer(data=request.data)
+        if not serializer.is_valid():
+            return validation_error_response(serializer.errors)
+        return Response({'success': True})
+
+
 class RegisterView(PublicView):
     throttle_classes = [RegisterThrottle, RegisterIPThrottle]
 
@@ -66,25 +79,35 @@ class RegisterView(PublicView):
         serializer = NewAccountSerializer(data=request.data)
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
-        try:
-            user = serializer.save()
-        except IntegrityError:
-            # Someone took the email or id between the check and the save: answer like the check.
-            again = NewAccountSerializer(data=request.data)
-            if not again.is_valid():
-                return validation_error_response(again.errors)
-            return error_response('This account could not be created. Please try again.', 400)
-        if user.is_verified:
+
+        def create_and_sign_in():
+            prepared_face = None
+            if serializer.validated_data['role'] == User.Role.STUDENT:
+                uploads = face_services.parse_face_uploads(request.data, request.FILES)
+                prepared_face = face_services.prepare_student_faces(uploads)
+            try:
+                with transaction.atomic():
+                    user = serializer.save()
+                    if prepared_face is not None:
+                        engine_name, vectors, prepared = prepared_face
+                        face_services.save_prepared_faces(user.student_profile, engine_name, vectors, prepared)
+            except IntegrityError:
+                # Someone took the email or id between the check and the save: answer like the check.
+                again = NewAccountSerializer(data=request.data)
+                if not again.is_valid():
+                    return validation_error_response(again.errors)
+                return error_response('This account could not be created. Please try again.', 400)
+
+            update_last_login(None, user)
             return Response({
                 'success': True,
                 'status': 'approved',
-                'message': 'Account created successfully. You can sign in now.',
+                'message': 'Account created successfully.',
+                **tokens_for(user),
+                'user': user_data(user),
             }, status=status.HTTP_201_CREATED)
-        return Response({
-            'success': True,
-            'status': 'pending',
-            'message': 'Account created. An admin will approve it soon.',
-        }, status=status.HTTP_201_CREATED)
+
+        return run_face_task(create_and_sign_in)
 
 
 class LogoutView(APIView):

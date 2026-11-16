@@ -8,7 +8,7 @@ from django.db.models import Q
 from rest_framework import serializers
 
 from .constants import DEPARTMENT, EMAIL_MAX_LENGTH, FACULTY, LEVELS, TERMS
-from .models import ApprovalSetting, DeviceBinding, StudentProfile, TeacherProfile
+from .models import DeviceBinding, StudentProfile, TeacherProfile
 from .services import iso
 
 User = get_user_model()
@@ -184,7 +184,7 @@ class LoginSerializer(serializers.Serializer):
 class NewAccountSerializer(serializers.Serializer):
     """
     A student or teacher account with its profile, made in one transaction.
-    Sign-up makes it waiting for approval; admins create approved accounts (verified=True).
+    Sign-up and admin creation both create verified accounts; `verified=True` marks admin calls.
     """
     role = serializers.CharField()
     email = serializers.EmailField(max_length=EMAIL_MAX_LENGTH)
@@ -254,18 +254,7 @@ class NewAccountSerializer(serializers.Serializer):
     def create(self, validated_data):
         email = validated_data['email']
         role = validated_data['role']
-        if self.verified is not None:
-            is_verified = bool(self.verified)
-        else:
-            settings = ApprovalSetting.get_settings()
-            if role == User.Role.STUDENT:
-                is_verified = settings.auto_approve_student
-            elif role == User.Role.TEACHER:
-                is_verified = settings.auto_approve_teacher
-            elif role == User.Role.ADMIN:
-                is_verified = settings.auto_approve_admin
-            else:
-                is_verified = False
+        is_verified = True if self.verified is None else bool(self.verified)
 
         with transaction.atomic():
             user = User(

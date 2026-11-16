@@ -95,11 +95,36 @@ def face_status(student) -> dict:
     }
 
 
-def register_student_faces(student, uploads: dict) -> dict:
+def parse_face_uploads(data, files) -> dict:
+    """Checks consent and extracts {'STRAIGHT': file, 'LEFT': file, 'RIGHT': file}, or raises FaceError."""
+    if str(data.get('consent', '')).lower() not in ('true', '1', 'yes'):
+        raise FaceError('Please agree to the consent statement first.')
+    uploads = {pose: files.get(pose.lower()) for pose in POSE_LABELS}
+    missing = [POSE_LABELS[p] for p, f in uploads.items() if f is None]
+    if missing:
+        raise FaceError(f'Missing photo: {", ".join(missing)}.')
+    return uploads
+
+
+def _check_not_duplicate(vectors: np.ndarray, exclude_student=None):
+    others_qs = StudentFace.objects.filter(student__user__deleted=False)
+    if exclude_student is not None:
+        others_qs = others_qs.exclude(student=exclude_student)
+    others = list(others_qs.values_list('embedding', flat=True))
+    if others:
+        gallery = np.stack([embedding_from_bytes(e) for e in others])
+        if float((gallery @ vectors.T).max()) >= settings.FACE_DUPLICATE_THRESHOLD:
+            raise FaceError(
+                'This face is already registered to another student. Please contact an admin.', status=409
+            )
+
+
+def prepare_student_faces(uploads: dict, exclude_student=None):
     """
     uploads: {'STRAIGHT': file, 'LEFT': file, 'RIGHT': file}.
     Each photo must show exactly one clear face, the three must be the same
     person, and that person must not already be registered as someone else.
+    Returns (engine_name, vectors, [(pose, crop_jpeg_bytes, embedding_bytes), ...]).
     """
     engine = get_engine()
     chosen = []
@@ -123,28 +148,39 @@ def register_student_faces(student, uploads: dict) -> dict:
     if agreement[np.triu_indices(len(vectors), 1)].min() < settings.FACE_SAME_PERSON_THRESHOLD:
         raise FaceError("The 3 photos don't look like the same person. Please try again.")
 
-    # Is this face already registered to another student?
-    others = StudentFace.objects.exclude(student=student).filter(
-        student__user__deleted=False,
-    ).values_list('embedding', flat=True)
-    if others:
-        gallery = np.stack([embedding_from_bytes(e) for e in others])
-        if float((gallery @ vectors.T).max()) >= settings.FACE_DUPLICATE_THRESHOLD:
-            raise FaceError(
-                'This face is already registered to another student. Please contact an admin.', status=409
-            )
+    _check_not_duplicate(vectors, exclude_student=exclude_student)
 
+    prepared = [
+        (pose, crop_to_jpeg(face.crop), embedding_to_bytes(face.embedding))
+        for pose, face in chosen
+    ]
+    return engine.name, vectors, prepared
+
+
+def save_prepared_faces(student, engine_name: str, vectors: np.ndarray, prepared: list) -> dict:
+    """Saves already-validated face crops and embeddings for `student` inside a transaction."""
     now = timezone.now()
     with transaction.atomic():
+        _check_not_duplicate(vectors, exclude_student=student)
         StudentFace.objects.filter(student=student).delete()
         StudentFace.objects.bulk_create([
             StudentFace(
-                student=student, pose=pose, crop_jpeg=crop_to_jpeg(face.crop),
-                embedding=embedding_to_bytes(face.embedding), engine=engine.name, consented_at=now,
+                student=student, pose=pose, crop_jpeg=crop_jpeg,
+                embedding=embedding, engine=engine_name, consented_at=now,
             )
-            for pose, face in chosen
+            for pose, crop_jpeg, embedding in prepared
         ])
     return face_status(student)
+
+
+def register_student_faces(student, uploads: dict) -> dict:
+    """
+    uploads: {'STRAIGHT': file, 'LEFT': file, 'RIGHT': file}.
+    Each photo must show exactly one clear face, the three must be the same
+    person, and that person must not already be registered as someone else.
+    """
+    engine_name, vectors, prepared = prepare_student_faces(uploads, exclude_student=student)
+    return save_prepared_faces(student, engine_name, vectors, prepared)
 
 
 # ── Class photos ──────────────────────────────────────────────────────────────

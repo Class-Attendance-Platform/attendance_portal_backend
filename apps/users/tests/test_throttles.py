@@ -9,6 +9,7 @@ from rest_framework.test import APIClient
 from rest_framework.throttling import SimpleRateThrottle
 
 from apps.attendance.tests.helpers import client_for, make_student
+from apps.faces.tests.test_faces import FakeEngine, face, person
 from apps.users.throttles import LoginIPThrottle, RegisterIPThrottle
 
 
@@ -62,16 +63,29 @@ class ThrottleTests(TestCase):
 
     def test_a_class_of_100_signing_up_from_one_ip_with_retries_is_not_blocked(self):
         client = APIClient()
-        for n in range(100):
-            body = {
-                'role': 'STUDENT', 'email': f'student{n}@example.com', 'first_name': 'Class', 'last_name': f'Member {n}',
-                'student_id': 2302100 + n, 'current_level': 'Third', 'current_semester': 'I',
-            }
-            if n % 10 == 0:  # some try a common password first
-                res = client.post('/api/auth/register/', {**body, 'password': 'password123'}, format='json')
-                self.assertEqual(res.status_code, 400)
-            res = client.post('/api/auth/register/', {**body, 'password': 'Tiger-lake-2026'}, format='json')
-            self.assertEqual(res.status_code, 201, res.data)
+        engine = FakeEngine()
+        with mock.patch('apps.faces.services.get_engine', return_value=engine):
+            for n in range(100):
+                body = {
+                    'role': 'STUDENT', 'email': f'student{n}@example.com', 'first_name': 'Class',
+                    'last_name': f'Member {n}', 'student_id': 2302100 + n, 'current_level': 'Third',
+                    'current_semester': 'I',
+                }
+                if n % 10 == 0:  # some try a common password first on step 1
+                    res = client.post('/api/auth/register/check/', {**body, 'password': 'password123'}, format='json')
+                    self.assertEqual(res.status_code, 400)
+                check = client.post('/api/auth/register/check/', {**body, 'password': 'Tiger-lake-2026'}, format='json')
+                self.assertEqual(check.status_code, 200, check.data)
+                p = person(n % 400 + 1)  # distinct unit vectors (512 dims) so no two students share a face
+                res = client.post('/api/auth/register/', {
+                    **body,
+                    'password': 'Tiger-lake-2026',
+                    'consent': 'true',
+                    'straight': engine.photo((n + 1, 1, 0), [face(p)]),
+                    'left': engine.photo((n + 1, 2, 0), [face(p)]),
+                    'right': engine.photo((n + 1, 3, 0), [face(p)]),
+                }, format='multipart')
+                self.assertEqual(res.status_code, 201, res.data)
 
     def test_register_has_a_wide_cap_per_ip(self):
         client = APIClient()

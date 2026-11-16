@@ -87,14 +87,9 @@ class MyFaceView(APIView):
         student = _profile(request)
         if not student:
             return Response({'success': False, 'message': 'Student not found.'}, status=404)
-        if str(request.data.get('consent', '')).lower() not in ('true', '1', 'yes'):
-            return Response({'success': False, 'message': 'Please agree to the consent statement first.'}, status=400)
-        uploads = {pose: request.FILES.get(pose.lower()) for pose in services.POSE_LABELS}
-        missing = [services.POSE_LABELS[p] for p, f in uploads.items() if f is None]
-        if missing:
-            return Response({'success': False, 'message': f'Missing photo: {", ".join(missing)}.'}, status=400)
 
         def register():
+            uploads = services.parse_face_uploads(request.data, request.FILES)
             return Response({'success': True, **services.register_student_faces(student, uploads)}, status=201)
         return run_face_task(register)
 
