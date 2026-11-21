@@ -6,7 +6,6 @@ from rest_framework.permissions import AllowAny
 from apps.users.constants import APP_NAME, DEPARTMENT_NAME, DOWNLOAD_URL, FACULTY_NAME, LEVELS, TERMS
 from apps.users.services import email_reset_enabled
 
-
 CREDIT_ENUM_MAP = {
     '0.75': 'CREDIT_0_75',
     '1.00': 'CREDIT_1_00',
@@ -29,7 +28,6 @@ DEPARTMENTS = [
     'AGRICULTURE_CHEMISTRY',
 ]
 
-
 class CreditsConfigView(APIView):
     permission_classes = [AllowAny]
 
@@ -40,13 +38,11 @@ class CreditsConfigView(APIView):
             'revCreditMap': {v: k for k, v in CREDIT_ENUM_MAP.items()},
         })
 
-
 class FacultiesConfigView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
         return Response({'success': True, 'faculties': FACULTIES})
-
 
 class DepartmentsConfigView(APIView):
     permission_classes = [AllowAny]
@@ -54,9 +50,7 @@ class DepartmentsConfigView(APIView):
     def get(self, request):
         return Response({'success': True, 'departments': DEPARTMENTS})
 
-
 class AppConfigView(APIView):
-    """Public app settings: names, the attendance minimum, app versions, level/term lists."""
     permission_classes = [AllowAny]
     authentication_classes = []
 

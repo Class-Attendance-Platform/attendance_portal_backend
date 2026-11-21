@@ -12,32 +12,32 @@
 
 ## 2. Verified Teachers (HSTU CSE Faculty Members)
 
-| Name | Designation | Employee ID | Email | Password |
-|---|---|---|---|---|
-| Dr. Md. Abdulla Al Mamun | Professor & Chairman | `EMP-CSE-001` | `mamun@hstu.ac.bd` | `HstuCse@2026` |
-| Adiba Mahjabin Nitu | Professor | `EMP-CSE-002` | `nitu@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. Md. Delowar Hossain | Professor | `EMP-CSE-003` | `delowar@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. Ashis Kumar Mandal | Professor | `EMP-CSE-004` | `ashis@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. Md. Arshad Ali | Professor | `EMP-CSE-005` | `arshad@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Fazle Rabbi | Associate Professor | `EMP-CSE-006` | `rabbi@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. Masud Ibn Afjal | Associate Professor | `EMP-CSE-007` | `masud@hstu.ac.bd` | `HstuCse@2026` |
-| Hasi Saha | Associate Professor | `EMP-CSE-008` | `hasi@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. Md. Palash Uddin | Associate Professor | `EMP-CSE-009` | `palash@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Rashedul Islam | Associate Professor | `EMP-CSE-010` | `rashedul@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Nahid Sultan | Associate Professor | `EMP-CSE-011` | `nahid@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Sohrawordi | Associate Professor | `EMP-CSE-012` | `sohrawordi@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. Md. Nadim | Associate Professor | `EMP-CSE-013` | `nadim@hstu.ac.bd` | `HstuCse@2026` |
-| Ahsan Habib | Assistant Professor | `EMP-CSE-014` | `habib@hstu.ac.bd` | `HstuCse@2026` |
-| Emran Ali | Assistant Professor | `EMP-CSE-015` | `emran@hstu.ac.bd` | `HstuCse@2026` |
-| Dr. U. A. Md. Ehsan Ali | Assistant Professor | `EMP-CSE-016` | `ehsan@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Shajalal | Assistant Professor | `EMP-CSE-017` | `shajalal@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Abu Marjan | Assistant Professor | `EMP-CSE-018` | `marjan@hstu.ac.bd` | `HstuCse@2026` |
-| Sumya Akter | Assistant Professor | `EMP-CSE-019` | `sumya@hstu.ac.bd` | `HstuCse@2026` |
-| Pankaj Bhowmik | Assistant Professor | `EMP-CSE-020` | `pankaj@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Tazel Hossan | Lecturer | `EMP-CSE-021` | `tazel@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Ashraful Islam | Lecturer | `EMP-CSE-022` | `ashraful@hstu.ac.bd` | `HstuCse@2026` |
-| Fahmina Akhtar | Lecturer | `EMP-CSE-023` | `fahmina@hstu.ac.bd` | `HstuCse@2026` |
-| Md. Abu Hanif | Lecturer | `EMP-CSE-024` | `hanif@hstu.ac.bd` | `HstuCse@2026` |
+| Name                     | Designation          | Employee ID   | Email                   | Password       |
+| ------------------------ | -------------------- | ------------- | ----------------------- | -------------- |
+| Dr. Md. Abdulla Al Mamun | Professor & Chairman | `EMP-CSE-001` | `mamun@hstu.ac.bd`      | `HstuCse@2026` |
+| Adiba Mahjabin Nitu      | Professor            | `EMP-CSE-002` | `nitu@hstu.ac.bd`       | `HstuCse@2026` |
+| Dr. Md. Delowar Hossain  | Professor            | `EMP-CSE-003` | `delowar@hstu.ac.bd`    | `HstuCse@2026` |
+| Dr. Ashis Kumar Mandal   | Professor            | `EMP-CSE-004` | `ashis@hstu.ac.bd`      | `HstuCse@2026` |
+| Dr. Md. Arshad Ali       | Professor            | `EMP-CSE-005` | `arshad@hstu.ac.bd`     | `HstuCse@2026` |
+| Md. Fazle Rabbi          | Associate Professor  | `EMP-CSE-006` | `rabbi@hstu.ac.bd`      | `HstuCse@2026` |
+| Dr. Masud Ibn Afjal      | Associate Professor  | `EMP-CSE-007` | `masud@hstu.ac.bd`      | `HstuCse@2026` |
+| Hasi Saha                | Associate Professor  | `EMP-CSE-008` | `hasi@hstu.ac.bd`       | `HstuCse@2026` |
+| Dr. Md. Palash Uddin     | Associate Professor  | `EMP-CSE-009` | `palash@hstu.ac.bd`     | `HstuCse@2026` |
+| Md. Rashedul Islam       | Associate Professor  | `EMP-CSE-010` | `rashedul@hstu.ac.bd`   | `HstuCse@2026` |
+| Md. Nahid Sultan         | Associate Professor  | `EMP-CSE-011` | `nahid@hstu.ac.bd`      | `HstuCse@2026` |
+| Md. Sohrawordi           | Associate Professor  | `EMP-CSE-012` | `sohrawordi@hstu.ac.bd` | `HstuCse@2026` |
+| Dr. Md. Nadim            | Associate Professor  | `EMP-CSE-013` | `nadim@hstu.ac.bd`      | `HstuCse@2026` |
+| Ahsan Habib              | Assistant Professor  | `EMP-CSE-014` | `habib@hstu.ac.bd`      | `HstuCse@2026` |
+| Emran Ali                | Assistant Professor  | `EMP-CSE-015` | `emran@hstu.ac.bd`      | `HstuCse@2026` |
+| Dr. U. A. Md. Ehsan Ali  | Assistant Professor  | `EMP-CSE-016` | `ehsan@hstu.ac.bd`      | `HstuCse@2026` |
+| Md. Shajalal             | Assistant Professor  | `EMP-CSE-017` | `shajalal@hstu.ac.bd`   | `HstuCse@2026` |
+| Md. Abu Marjan           | Assistant Professor  | `EMP-CSE-018` | `marjan@hstu.ac.bd`     | `HstuCse@2026` |
+| Sumya Akter              | Assistant Professor  | `EMP-CSE-019` | `sumya@hstu.ac.bd`      | `HstuCse@2026` |
+| Pankaj Bhowmik           | Assistant Professor  | `EMP-CSE-020` | `pankaj@hstu.ac.bd`     | `HstuCse@2026` |
+| Md. Tazel Hossan         | Lecturer             | `EMP-CSE-021` | `tazel@hstu.ac.bd`      | `HstuCse@2026` |
+| Md. Ashraful Islam       | Lecturer             | `EMP-CSE-022` | `ashraful@hstu.ac.bd`   | `HstuCse@2026` |
+| Fahmina Akhtar           | Lecturer             | `EMP-CSE-023` | `fahmina@hstu.ac.bd`    | `HstuCse@2026` |
+| Md. Abu Hanif            | Lecturer             | `EMP-CSE-024` | `hanif@hstu.ac.bd`      | `HstuCse@2026` |
 
 
 ## 3. Pending Approval Teachers

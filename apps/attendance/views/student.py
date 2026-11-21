@@ -1,4 +1,3 @@
-"""Student: live sessions of their own courses and one course's days (API v2 sections 5 and 7)."""
 from django.shortcuts import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,13 +10,10 @@ from apps.users.models import StudentProfile
 from apps.users.permissions import IsStudent
 from config.errors import error_response
 
-
 def own_profile(request):
     return StudentProfile.objects.filter(user=request.user, user__deleted=False).first()
 
-
 class StudentLiveSessionsView(APIView):
-    """Live sessions of the student's current courses (the "Live now" banner). No token or code."""
     permission_classes = [IsStudent]
 
     def get(self, request):
@@ -49,9 +45,7 @@ class StudentLiveSessionsView(APIView):
             })
         return Response({'success': True, 'sessions': rows})
 
-
 class StudentCourseDetailView(APIView):
-    """One of the signed-in student's courses: numbers and every class date."""
     permission_classes = [IsStudent]
 
     def get(self, request, uuid):

@@ -28,12 +28,9 @@ User = get_user_model()
 
 FORGOT_SENT_MESSAGE = 'If an account exists for this email, we sent a link to reset the password.'
 
-
 class PublicView(APIView):
-    """No sign-in needed; a stale token in the request is ignored instead of answering 401."""
     permission_classes = [AllowAny]
     authentication_classes = []
-
 
 class LoginView(PublicView):
     throttle_classes = [LoginThrottle, LoginIPThrottle]
@@ -47,7 +44,7 @@ class LoginView(PublicView):
 
         user = find_user_by_email(email, password)
         if user is None:
-            User().set_password(password)  # same work as a real check, so timing tells nothing
+            User().set_password(password)
         if user is None or not user.check_password(password):
             return error_response('Email or password is incorrect.', 401, code='invalid_credentials')
         if user.deleted or not user.is_active:
@@ -60,9 +57,7 @@ class LoginView(PublicView):
         update_last_login(None, user)
         return Response({'success': True, **tokens_for(user), 'user': user_data(user)})
 
-
 class RegisterCheckView(PublicView):
-    """Validates sign-up details before a student opens the camera for face capture."""
     throttle_classes = [RegisterThrottle, RegisterIPThrottle]
 
     def post(self, request):
@@ -70,7 +65,6 @@ class RegisterCheckView(PublicView):
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
         return Response({'success': True})
-
 
 class RegisterView(PublicView):
     throttle_classes = [RegisterThrottle, RegisterIPThrottle]
@@ -92,7 +86,6 @@ class RegisterView(PublicView):
                         engine_name, vectors, prepared = prepared_face
                         face_services.save_prepared_faces(user.student_profile, engine_name, vectors, prepared)
             except IntegrityError:
-                # Someone took the email or id between the check and the save: answer like the check.
                 again = NewAccountSerializer(data=request.data)
                 if not again.is_valid():
                     return validation_error_response(again.errors)
@@ -109,7 +102,6 @@ class RegisterView(PublicView):
 
         return run_face_task(create_and_sign_in)
 
-
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -121,9 +113,8 @@ class LogoutView(APIView):
                 if str(token.payload.get('user_id')) == str(request.user.pk):
                     token.blacklist()
             except TokenError:
-                pass  # already invalid: nothing left to sign out
+                pass
         return Response({'success': True, 'message': 'Signed out.'})
-
 
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
@@ -143,7 +134,6 @@ class MeView(APIView):
         if changed:
             user.save(update_fields=changed)
         return Response({'success': True, 'user': user_data(user)})
-
 
 class PasswordChangeView(APIView):
     permission_classes = [IsAuthenticated]
@@ -166,9 +156,8 @@ class PasswordChangeView(APIView):
 
         user.set_password(new)
         user.save(update_fields=['password'])
-        blacklist_refresh_tokens(user)  # other devices are signed out
+        blacklist_refresh_tokens(user)
         return Response({'success': True, 'message': 'Password changed.', 'tokens': tokens_for(user)})
-
 
 class PasswordForgotView(PublicView):
     throttle_classes = [PasswordForgotThrottle]
@@ -183,11 +172,9 @@ class PasswordForgotView(PublicView):
         if not serializer.is_valid():
             return validation_error_response(serializer.errors)
         user = find_user_by_email(serializer.validated_data['email'])
-        # Same answer either way, so nobody can test which emails have accounts.
         if user is not None and can_sign_in(user) and user.has_usable_password():
             send_password_reset_email_once(user)
         return Response({'success': True, 'message': FORGOT_SENT_MESSAGE})
-
 
 class PasswordResetView(PublicView):
     def post(self, request):
@@ -202,7 +189,7 @@ class PasswordResetView(PublicView):
         if problems:
             return validation_error_response({'new_password': problems})
 
-        user.set_password(data['new_password'])  # also makes the link unusable (one use)
+        user.set_password(data['new_password'])
         user.save(update_fields=['password'])
         blacklist_refresh_tokens(user)
         return Response({'success': True, 'message': 'Password changed. You can sign in with it now.'})

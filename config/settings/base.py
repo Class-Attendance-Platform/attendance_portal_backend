@@ -14,13 +14,11 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django_extensions',
-    # Third party
     'rest_framework',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'django_filters',
-    # Local apps
     'apps.users',
     'apps.academic',
     'apps.attendance',
@@ -69,7 +67,6 @@ DATABASES = {
         'HOST': config('DB_HOST'),
         'PORT': config('DB_PORT', default='5432'),
         'OPTIONS': {
-            # "require" for hosted databases (Neon); "disable" for PostgreSQL on the same server
             'sslmode': config('DB_SSLMODE', default='require'),
         },
     }
@@ -94,12 +91,10 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ── DRF ──────────────────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
-    # DRF's defaults, except that a JSON body must be an object (config/parsers.py)
     'DEFAULT_PARSER_CLASSES': (
         'config.parsers.ObjectJSONParser',
         'rest_framework.parsers.FormParser',
@@ -115,28 +110,19 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
-    # Every error carries a readable "message" (config/errors.py)
     'EXCEPTION_HANDLER': 'config.errors.api_exception_handler',
-    # Per IP + email (login, register), per IP (the wide caps, password_forgot) or per user
-    # (check_in, face_register); see apps/users/throttles.py. Classes behind one shared campus IP
-    # may need higher limits: raise them in .env.
     'DEFAULT_THROTTLE_RATES': {
-        # A class signs in or signs up together from one campus IP: login and sign-up count per
-        # IP + email, with a wide per-IP cap; the reset count allows a whole class.
         'login': config('THROTTLE_LOGIN', default='10/min'),
         'login_ip': config('THROTTLE_LOGIN_IP', default='300/min'),
         'register': config('THROTTLE_REGISTER', default='10/hour'),
         'register_ip': config('THROTTLE_REGISTER_IP', default='300/hour'),
         'password_forgot': config('THROTTLE_PASSWORD_FORGOT', default='20/hour'),
-        # Per signed-in user: guessing the current password from a session left open
         'password_change': config('THROTTLE_PASSWORD_CHANGE', default='10/hour'),
         'check_in': config('THROTTLE_CHECK_IN', default='30/min'),
-        # Each face registration (POST /faces/me/) runs the face engine on 3 photos
         'face_register': config('THROTTLE_FACE_REGISTER', default='20/hour'),
     },
 }
 
-# ── JWT ───────────────────────────────────────────────────────────────────────
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
@@ -146,15 +132,10 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
     'USER_ID_FIELD': 'id',
     'USER_ID_CLAIM': 'user_id',
-    # A password change, reset or admin reset also ends the other devices' access tokens at once
-    # (tokens carry a fingerprint of the password hash). Older refresh tokens get the fingerprint
-    # when they are refreshed, so switching this on signs nobody out: apps/users/jwt.py.
     'CHECK_REVOKE_TOKEN': True,
     'TOKEN_REFRESH_SERIALIZER': 'apps.users.jwt.PasswordCheckedRefreshSerializer',
 }
 
-# ── Cache ─────────────────────────────────────────────────────────────────────
-# In-memory cache for DRF rate limiting throttles. No external Redis needed.
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
@@ -162,48 +143,34 @@ CACHES = {
     }
 }
 
-# ── App ───────────────────────────────────────────────────────────────────────
-# Public address of the web app: links in emails and QR codes (no trailing slash)
 WEB_URL = config('WEB_URL', default='https://attendanceportal.sakibkx.tech').rstrip('/')
-# The Android app blocks with "Please update" below MIN_APP_VERSION (GET /api/config/app/)
 MIN_APP_VERSION = config('MIN_APP_VERSION', default='1.0.0')
 LATEST_APP_VERSION = config('LATEST_APP_VERSION', default='1.0.0')
 ATTENDANCE_MIN_PERCENT = config('ATTENDANCE_MIN_PERCENT', default=75, cast=int)
 
-# ── Email (Gmail SMTP; password reset links) ──────────────────────────────────
-# Empty EMAIL_HOST_USER = password reset by email is off (admins reset passwords instead).
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
 EMAIL_TIMEOUT = 20
 EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')  # Gmail app password
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config(
     'DEFAULT_FROM_EMAIL',
     default=f'HSTU Attendance Portal <{EMAIL_HOST_USER}>' if EMAIL_HOST_USER else 'webmaster@localhost',
 )
-PASSWORD_RESET_TIMEOUT = 60 * 60 * 24  # reset links work for 1 day
-# One reset email per account in this many seconds (protects the inbox and the Gmail quota)
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
 PASSWORD_RESET_EMAIL_INTERVAL = config('PASSWORD_RESET_EMAIL_INTERVAL', default=15 * 60, cast=int)
-# Reset emails go out after the answer, so its timing does not tell which emails have accounts
 SEND_EMAIL_IN_BACKGROUND = True
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
-CORS_ALLOW_ALL_ORIGINS = True  # Tighten in production
-# The web app (another host) names downloaded exports from Content-Disposition; browsers only let
-# a page read that header when it is exposed.
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_EXPOSE_HEADERS = ['Content-Disposition']
 
-# ── Face attendance ───────────────────────────────────────────────────────────
-# Engine "insightface" = InsightFace buffalo_l models via onnxruntime
-# (download with `python manage.py download_face_models`).
 FACE_ENGINE = config('FACE_ENGINE', default='insightface')
 FACE_MODEL_DIR = Path(config('FACE_MODEL_DIR', default=str(BASE_DIR / 'face_models')))
-# Similarity scores run from -1 to 1 (same person usually 0.6+, strangers below 0.2).
-FACE_MATCH_THRESHOLD = config('FACE_MATCH_THRESHOLD', default=0.45, cast=float)        # present
-FACE_UNSURE_THRESHOLD = config('FACE_UNSURE_THRESHOLD', default=0.30, cast=float)      # teacher checks
-FACE_SAME_PERSON_THRESHOLD = config('FACE_SAME_PERSON_THRESHOLD', default=0.35, cast=float)  # 3 sign-up shots
-FACE_DUPLICATE_THRESHOLD = config('FACE_DUPLICATE_THRESHOLD', default=0.50, cast=float)  # face already taken
+FACE_MATCH_THRESHOLD = config('FACE_MATCH_THRESHOLD', default=0.45, cast=float)
+FACE_UNSURE_THRESHOLD = config('FACE_UNSURE_THRESHOLD', default=0.30, cast=float)
+FACE_SAME_PERSON_THRESHOLD = config('FACE_SAME_PERSON_THRESHOLD', default=0.35, cast=float)
+FACE_DUPLICATE_THRESHOLD = config('FACE_DUPLICATE_THRESHOLD', default=0.50, cast=float)
 FACE_DETECTION_THRESHOLD = config('FACE_DETECTION_THRESHOLD', default=0.50, cast=float)
 FACE_CLASS_PHOTO_MAX_SIDE = config('FACE_CLASS_PHOTO_MAX_SIDE', default=1920, cast=int)

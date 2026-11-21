@@ -1,7 +1,3 @@
-"""
-Teacher: courses, students, history and corrections (API v2 section 6). Admins pass
-can_manage_course too (the admin UI is read-only here).
-"""
 from collections import defaultdict
 
 from django.db import transaction
@@ -26,9 +22,7 @@ from apps.users.models import TeacherProfile
 from apps.users.permissions import IsAdminOrTeacher, can_manage_course, not_your_course_response
 from config.errors import error_response, validation_error_response
 
-
 def teacher_course(request, uuid):
-    """(course info, None) if the user may manage it, else (None, error response); 404 when deleted."""
     ci = get_object_or_404(
         CourseInfo.objects.select_related('course', 'teacher__user', 'semester', 'classroom'),
         id=uuid, deleted=False, course__deleted=False, semester__deleted=False,
@@ -37,16 +31,10 @@ def teacher_course(request, uuid):
         return None, not_your_course_response()
     return ci, None
 
-
 def future_date_response():
     return error_response('You cannot take attendance for a future date.', status=400, code='future_date')
 
-
 def outside_semester_response(semester, day):
-    """
-    400 for a roll call date before the semester's start date, or after its end date once it
-    is finished (only the dates that are set); None when the date is fine.
-    """
     start = semester.start_date
     end = semester.end_date if not semester.is_active else None
     if not ((start and day < start) or (end and day > end)):
@@ -61,12 +49,7 @@ def outside_semester_response(semester, day):
         f"Pick a date in this course's semester ({dates}).", status=400, code='outside_semester',
     )
 
-
 def course_rows(course_infos):
-    """
-    ({course info id: Course row}, numbers) for the teacher's lists: class list counts,
-    classes held, average, below-minimum and face registration counts, live session.
-    """
     course_infos = list(course_infos)
     numbers = course_numbers(course_infos)
     profile_ids = {pid for n in numbers.values() for pid in n.students}
@@ -95,9 +78,7 @@ def course_rows(course_infos):
         }
     return rows, numbers, with_faces
 
-
 class TeacherCoursesView(APIView):
-    """{current: [Course], previous: [Course]} (previous = finished semesters)."""
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
@@ -105,10 +86,8 @@ class TeacherCoursesView(APIView):
         if request.user.role == "TEACHER" and teacher.user_id != request.user.id:
             return error_response('You can only view your own courses.', status=403, code='permission_denied')
 
-        # Save any of this teacher's sessions whose timer ran out (e.g. tab was closed)
         finalize_ended_sessions(AttendanceSession.objects.filter(course_info__teacher=teacher))
 
-        # Deleted courses and semesters are hidden from teachers
         course_infos = list(CourseInfo.objects.filter(
             teacher=teacher, deleted=False, course__deleted=False, semester__deleted=False,
         ).select_related("course", "semester"))
@@ -122,9 +101,7 @@ class TeacherCoursesView(APIView):
             "previous": [rows[ci.id] for ci in course_infos if not ci.semester.is_active],
         })
 
-
 class TeacherCourseInfoDetailView(APIView):
-    """The course, its class list with each student's numbers, and its class dates."""
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
@@ -152,7 +129,6 @@ class TeacherCourseInfoDetailView(APIView):
                 'face_registered': profile_id in with_faces,
             })
 
-        # Each class date: how many were present / had a log (deleted accounts left out)
         present, total = defaultdict(set), defaultdict(set)
         logs = AttendanceLog.objects.filter(course_info=ci, student__user__deleted=False).order_by()
         for day, student_id, status in logs.values_list('date', 'student_id', 'status'):
@@ -166,17 +142,13 @@ class TeacherCourseInfoDetailView(APIView):
 
         return Response({'success': True, 'course': rows[ci.id], 'students': students, 'dates': dates})
 
-
 def course_membership(ci, profile_id):
-    """The student's membership in the course's class group (former members too), or None."""
     return (
         StudentClassroom.objects.filter(classroom_id=ci.classroom_id, student_id=profile_id)
         .active_accounts().select_related('student__user').first()
     )
 
-
 class TeacherStudentDetailView(APIView):
-    """One student in a course: numbers and every class date (status null = not enrolled)."""
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid, profile_id):
@@ -207,9 +179,7 @@ class TeacherStudentDetailView(APIView):
             'days': days,
         })
 
-
 class TeacherLiveSessionView(APIView):
-    """The course's live session (reopen after a reload), or null."""
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
@@ -219,9 +189,7 @@ class TeacherLiveSessionView(APIView):
         session, cache_data = live_session(ci)
         return Response({'success': True, 'session': session_payload(session, cache_data) if session else None})
 
-
 class TeacherAttendanceCorrectionView(APIView):
-    """PUT {date, profile_id, status}: changes only that student on a date that has a class."""
     permission_classes = [IsAdminOrTeacher]
 
     def put(self, request, uuid):
@@ -259,12 +227,9 @@ class TeacherAttendanceCorrectionView(APIView):
             'day': {'date': day.isoformat(), 'status': status, **log_details(deciding)},
         })
 
-
 def live_session_on(ci, day):
-    """The course's live session on that date (still taking check-ins), or None."""
     found = live_sessions(AttendanceSession.objects.filter(course_info=ci, date=day))
     return found[0][0] if found else None
-
 
 def session_running_response(session):
     return error_response(
@@ -272,13 +237,7 @@ def session_running_response(session):
         status=409, code='session_running', session_id=str(session.id),
     )
 
-
 class TeacherRollCallView(APIView):
-    """
-    GET ?date=: whom a roll call for that date covers (everyone enrolled that day, former members
-    too) with their status. POST {date, present_profile_ids, absent_profile_ids?, version?}:
-    saves a roll call (creates the class if missing). Dates outside the semester are refused.
-    """
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
@@ -352,9 +311,7 @@ class TeacherRollCallView(APIView):
             **counts,
         })
 
-
 class TeacherDeleteDateView(APIView):
-    """DELETE .../history-session/<date>/: deletes that date's classes and logs."""
     permission_classes = [IsAdminOrTeacher]
 
     def delete(self, request, uuid, date):

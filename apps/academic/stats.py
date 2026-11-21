@@ -1,16 +1,3 @@
-"""
-Attendance numbers for courses and semesters. One date = one class: a student counts as
-present on a date if any session that day marked them present.
-
-For each student on a course's class list (StudentClassroom.objects.class_list: current
-members of an active semester; everyone who was in a finished one):
-- held = the course's class dates inside their membership (joined_at <= date < left_at); on
-  the join day only if they have a log that day (StudentClassroom.counts_on: a class held
-  before they were added does not count for them)
-- attended = those dates on which they were present
-- percent = attended / held * 100 (None when held = 0: never "low" without classes), one
-  decimal, rounded down (round_percent)
-"""
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -20,22 +7,15 @@ from django.conf import settings
 from apps.academic.models import Classroom, CourseInfo, StudentClassroom
 from apps.attendance.models import AttendanceLog
 
-
 def round_percent(value):
-    """
-    One decimal, rounded down (66.67 -> 66.6, 82.95 -> 82.9): a percent never reads higher
-    than it is (the app shows whole numbers, also rounded down). The tiny margin keeps an
-    exact tenth that floats store just below it (74.99999… for 75.0) at that tenth.
-    """
     return None if value is None else math.floor(value * 10 + 1e-9) / 10
-
 
 @dataclass
 class StudentNumbers:
     membership: StudentClassroom
     attended: int = 0
     held: int = 0
-    dates: frozenset = frozenset()   # the held dates
+    dates: frozenset = frozenset()
 
     @property
     def percent(self):
@@ -45,11 +25,10 @@ class StudentNumbers:
     def below_min(self) -> bool:
         return self.held > 0 and self.attended * 100 < settings.ATTENDANCE_MIN_PERCENT * self.held
 
-
 @dataclass
 class CourseNumbers:
-    class_dates: list = field(default_factory=list)   # newest first
-    students: dict = field(default_factory=dict)      # profile id -> StudentNumbers
+    class_dates: list = field(default_factory=list)
+    students: dict = field(default_factory=dict)
 
     @property
     def student_count(self) -> int:
@@ -68,9 +47,7 @@ class CourseNumbers:
     def below_min_count(self) -> int:
         return sum(n.below_min for n in self.students.values())
 
-
 def course_numbers(course_infos) -> dict:
-    """{course info id: CourseNumbers} for many courses in a fixed number of queries."""
     course_infos = list(course_infos)
     ids = [ci.id for ci in course_infos]
     classroom_ids = {ci.classroom_id for ci in course_infos}
@@ -94,7 +71,6 @@ def course_numbers(course_infos) -> dict:
         logs.filter(status=AttendanceLog.Status.PRESENT).values_list('course_info_id', 'student_id', 'date').distinct()
     ):
         present[(ci_id, student_id)].add(day)
-    # Who has a log on their join day (a class held before they were added that day has none)
     join_days = {m.joined_at for ms in class_lists.values() for m in ms if m.joined_at}
     logged = set()
     if join_days:
@@ -120,13 +96,7 @@ def course_numbers(course_infos) -> dict:
         result[ci.id] = numbers
     return result
 
-
 def semester_numbers(semesters) -> dict:
-    """
-    {semester id: {average_percent, below_min_count}} over the semester's courses:
-    average_percent = mean of every (student, course) percent; below_min_count = students
-    below the minimum in at least one course.
-    """
     course_infos = list(
         CourseInfo.objects.filter(semester__in=semesters, deleted=False, course__deleted=False)
     )

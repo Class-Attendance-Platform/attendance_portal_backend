@@ -28,19 +28,14 @@ User = get_user_model()
 
 SIGN_UP_ROLES = (User.Role.STUDENT, User.Role.TEACHER)
 
-
 def _deleted_filter(request):
-    """?status=active (default) or deleted -> the `deleted` value to filter on; None if invalid."""
     value = (request.query_params.get('status') or 'active').strip().lower()
     return {'active': False, 'deleted': True}.get(value)
-
 
 def _invalid_status():
     return error_response('Status must be "active" or "deleted".', 400, code='invalid_status')
 
-
 def _search(queryset, text, *extra_fields):
-    """Every word must match the name, the email or one of the extra fields."""
     for word in text.split():
         match = Q(user__first_name__icontains=word) | Q(user__last_name__icontains=word) | Q(user__email__icontains=word)
         for field in extra_fields:
@@ -48,9 +43,7 @@ def _search(queryset, text, *extra_fields):
         queryset = queryset.filter(match)
     return queryset
 
-
 def _save(serializer, again):
-    """Saves; if a unique value was taken meanwhile, answers with the same field errors as the check."""
     try:
         serializer.save()
         return None
@@ -60,12 +53,7 @@ def _save(serializer, again):
             return validation_error_response(retry.errors)
         return error_response('This could not be saved. Please try again.', 400)
 
-
-# ── Approvals ─────────────────────────────────────────────────────────────────
-
-
 class AutoApprovalSettingsView(APIView):
-    """View and update auto-approval settings for admin, teacher, and student."""
     permission_classes = [IsAdmin]
 
     def get(self, request):
@@ -99,9 +87,7 @@ class AutoApprovalSettingsView(APIView):
             },
         })
 
-
 class PendingUsersView(APIView):
-    """Sign-ups waiting for approval, oldest first."""
     permission_classes = [IsAdmin]
 
     def get(self, request):
@@ -112,51 +98,41 @@ class PendingUsersView(APIView):
         )
         return Response({'success': True, 'users': [pending_user_row(u) for u in users]})
 
-
 class VerifyUserView(APIView):
-    """Approve a sign-up (POST; PATCH kept for the old app)."""
     permission_classes = [IsAdmin]
 
     def post(self, request, uuid):
         user = get_object_or_404(User, id=uuid, deleted=False)
-        # Written only if not rejected meanwhile: a Reject that lands after this read wins.
         if not user.is_verified and not User.objects.filter(pk=user.pk, deleted=False).update(is_verified=True):
             raise Http404
         return Response({'success': True, 'message': f'{user.email} approved.'})
 
     patch = post
 
-
 def _approved_meanwhile(user):
-    """409: approved by another admin or tab after this list loaded; the account is in use."""
     page = 'Teachers' if user.role == User.Role.TEACHER else 'Students'
     return error_response(
         f'{user.email} was approved meanwhile. To remove the account, delete it on the {page} page.',
         409, code='already_approved',
     )
 
-
 class RejectUserView(APIView):
-    """Soft-deletes a sign-up; its email and ids stay taken."""
     permission_classes = [IsAdmin]
 
     def post(self, request, uuid):
         user = get_object_or_404(User, id=uuid, deleted=False, role__in=SIGN_UP_ROLES)
         if user.is_verified:
             return _approved_meanwhile(user)
-        # Written only while still waiting: an Approve that lands after this read wins.
         if not User.objects.filter(pk=user.pk, is_verified=False, deleted=False).update(deleted=True, is_active=False):
             user.refresh_from_db(fields=['is_verified', 'deleted'])
             if user.deleted:
-                raise Http404  # rejected meanwhile: as for any later request
+                raise Http404
             return _approved_meanwhile(user)
-        blacklist_refresh_tokens(user)  # as deactivate_user does
-        StudentFace.objects.filter(student__user=user).delete()  # biometric data goes with the account
+        blacklist_refresh_tokens(user)
+        StudentFace.objects.filter(student__user=user).delete()
         return Response({'success': True, 'message': f'{user.email} rejected.'})
 
-
 class ResetUserPasswordView(APIView):
-    """The admin sets a temporary password; the user's other sign-ins end."""
     permission_classes = [IsAdmin]
 
     def post(self, request, uuid):
@@ -176,17 +152,12 @@ class ResetUserPasswordView(APIView):
             'message': f'Password changed for {user.email}. They can sign in with it and change it.',
         })
 
-
-# ── Students ──────────────────────────────────────────────────────────────────
-
 def _students():
     return StudentProfile.objects.select_related('user').annotate(
         face_registered=Exists(StudentFace.objects.filter(student=OuterRef('pk'))),
     )
 
-
 def _current_semesters(profiles) -> dict:
-    """{profile id: the active semester whose class group they are in now (not ones they left)}."""
     memberships = (
         StudentClassroom.objects.current().filter(
             student__in=profiles,
@@ -201,11 +172,9 @@ def _current_semesters(profiles) -> dict:
         result.setdefault(membership.student_id, membership.classroom.semester)
     return result
 
-
 def _student_payload(profile_id):
     profile = _students().get(id=profile_id)
     return student_row(profile, _current_semesters([profile.id]).get(profile.id), profile.face_registered)
-
 
 class AdminStudentListCreateView(APIView):
     permission_classes = [IsAdmin]
@@ -234,7 +203,6 @@ class AdminStudentListCreateView(APIView):
         })
 
     def post(self, request):
-        """An approved student account; `password` is a temporary password."""
         data = request.data.copy()
         data['role'] = User.Role.STUDENT
         serializer = NewAccountSerializer(data=data, verified=True)
@@ -246,7 +214,6 @@ class AdminStudentListCreateView(APIView):
         profile_id = serializer.instance.student_profile.id
         return Response({'success': True, 'student': _student_payload(profile_id)}, status=status.HTTP_201_CREATED)
 
-
 class AdminStudentDetailView(APIView):
     permission_classes = [IsAdmin]
 
@@ -255,7 +222,6 @@ class AdminStudentDetailView(APIView):
         return Response({'success': True, 'student': _student_payload(uuid)})
 
     def patch(self, request, uuid):
-        """Partial: any of email, first_name, last_name, student_id, current_level, current_semester."""
         profile = get_object_or_404(StudentProfile.objects.select_related('user'), id=uuid, user__deleted=False)
         serializer = StudentUpdateSerializer(profile, data=request.data, partial=True)
         if not serializer.is_valid():
@@ -266,15 +232,13 @@ class AdminStudentDetailView(APIView):
             return problem
         return Response({'success': True, 'student': _student_payload(uuid)})
 
-    put = patch  # the old app sends PUT
+    put = patch
 
     def delete(self, request, uuid):
-        """Soft delete; the student's face data is removed."""
         profile = get_object_or_404(StudentProfile.objects.select_related('user'), id=uuid, user__deleted=False)
         deactivate_user(profile.user)
-        profile.faces.all().delete()  # biometric data goes with the account
+        profile.faces.all().delete()
         return Response({'success': True, 'message': 'Student deleted.'})
-
 
 class AdminStudentRestoreView(APIView):
     permission_classes = [IsAdmin]
@@ -284,9 +248,7 @@ class AdminStudentRestoreView(APIView):
         restore_user(profile.user)
         return Response({'success': True, 'message': 'Student restored.', 'student': _student_payload(uuid)})
 
-
 class AdminStudentImportView(APIView):
-    """Students from a .csv/.xlsx file. Dry run unless apply is "true"."""
     permission_classes = [IsAdmin]
     parser_classes = [MultiPartParser, FormParser]
 
@@ -303,7 +265,7 @@ class AdminStudentImportView(APIView):
                 semester = Semester.objects.get(id=uuid_lib.UUID(semester_id), deleted=False)
             except (ValueError, Semester.DoesNotExist):
                 return validation_error_response({'semester_id': ['This semester was not found.']})
-            if not semester.is_active:  # as Promote: new students would join no active semester
+            if not semester.is_active:
                 return error_response(
                     f'{semester.label} is finished. Reopen it first, or choose another semester.',
                     400, code='semester_finished',
@@ -334,9 +296,6 @@ class AdminStudentImportView(APIView):
             body['created'] = created
         return Response(body)
 
-
-# ── Teachers ──────────────────────────────────────────────────────────────────
-
 def _teachers():
     return TeacherProfile.objects.select_related('user').annotate(
         course_count=Count(
@@ -347,11 +306,9 @@ def _teachers():
         ),
     )
 
-
 def _teacher_payload(profile_id):
     profile = _teachers().get(id=profile_id)
     return teacher_row(profile, profile.course_count)
-
 
 class AdminTeacherListCreateView(APIView):
     permission_classes = [IsAdmin]
@@ -367,7 +324,6 @@ class AdminTeacherListCreateView(APIView):
         return Response({'success': True, 'teachers': [teacher_row(p, p.course_count) for p in profiles]})
 
     def post(self, request):
-        """An approved teacher account; `password` is a temporary password."""
         data = request.data.copy()
         data['role'] = User.Role.TEACHER
         serializer = NewAccountSerializer(data=data, verified=True)
@@ -379,7 +335,6 @@ class AdminTeacherListCreateView(APIView):
         profile_id = serializer.instance.teacher_profile.id
         return Response({'success': True, 'teacher': _teacher_payload(profile_id)}, status=status.HTTP_201_CREATED)
 
-
 class AdminTeacherDetailView(APIView):
     permission_classes = [IsAdmin]
 
@@ -388,7 +343,6 @@ class AdminTeacherDetailView(APIView):
         return Response({'success': True, 'teacher': _teacher_payload(uuid)})
 
     def patch(self, request, uuid):
-        """Partial: any of email, first_name, last_name, employee_id."""
         profile = get_object_or_404(TeacherProfile.objects.select_related('user'), id=uuid, user__deleted=False)
         serializer = TeacherUpdateSerializer(profile, data=request.data, partial=True)
         if not serializer.is_valid():
@@ -399,13 +353,12 @@ class AdminTeacherDetailView(APIView):
             return problem
         return Response({'success': True, 'teacher': _teacher_payload(uuid)})
 
-    put = patch  # the old app sends PUT
+    put = patch
 
     def delete(self, request, uuid):
         profile = get_object_or_404(TeacherProfile.objects.select_related('user'), id=uuid, user__deleted=False)
         deactivate_user(profile.user)
         return Response({'success': True, 'message': 'Teacher deleted.'})
-
 
 class AdminTeacherRestoreView(APIView):
     permission_classes = [IsAdmin]

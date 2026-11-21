@@ -2,7 +2,6 @@ import uuid
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
-
 class User(AbstractUser):
     class Role(models.TextChoices):
         STUDENT = 'STUDENT', 'Student'
@@ -26,18 +25,16 @@ class User(AbstractUser):
     def __str__(self):
         return f'{self.email} ({self.role})'
 
-
 class StudentProfile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='student_profile')
-    student_id = models.IntegerField(unique=True)          # e.g. 2302001
-    current_level = models.CharField(max_length=20)        # e.g. "Third"
-    current_semester = models.CharField(max_length=5)      # e.g. "I"
+    student_id = models.IntegerField(unique=True)
+    current_level = models.CharField(max_length=20)
+    current_semester = models.CharField(max_length=5)
     hardware_finger_id = models.IntegerField(null=True, blank=True, unique=True)
 
     def __str__(self):
         return f'{self.user.get_full_name()} ({self.student_id})'
-
 
 class TeacherProfile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -47,7 +44,6 @@ class TeacherProfile(models.Model):
     def __str__(self):
         return f'{self.user.get_full_name()}'
 
-
 class AdminProfile(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='admin_profile')
@@ -55,12 +51,10 @@ class AdminProfile(models.Model):
     def __str__(self):
         return f'{self.user.get_full_name()}'
 
-
 class DeviceBinding(models.Model):
-    """Binds a student to a specific device MAC address for QR attendance."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     student = models.OneToOneField(StudentProfile, on_delete=models.CASCADE, related_name='device_binding')
-    mac_address = models.CharField(max_length=17, unique=True)  # e.g. AA:BB:CC:DD:EE:FF
+    mac_address = models.CharField(max_length=17, unique=True)
     bound_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
 

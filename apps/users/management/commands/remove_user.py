@@ -1,11 +1,3 @@
-"""
-Removes one account, after showing everything that goes with it.
-
-    python manage.py remove_user someone@example.com            # dry run: shows what would change
-    python manage.py remove_user someone@example.com --apply    # removes it
-
-Refuses to remove the last active admin, so nobody gets locked out.
-"""
 from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
 from django.contrib.admin.utils import NestedObjects
 from django.core.management.base import BaseCommand, CommandError
@@ -14,7 +6,6 @@ from django.utils import timezone
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from apps.users.models import User
-
 
 class Command(BaseCommand):
     help = 'Remove one account and everything that belongs to it (dry run unless --apply).'
@@ -28,7 +19,7 @@ class Command(BaseCommand):
         users = list(User.objects.filter(email__iexact=email))
         if not users:
             raise CommandError(f'No account with the email {email}.')
-        if len(users) > 1:  # emails are unique, but only with the exact same capitals
+        if len(users) > 1:
             exact = [u for u in users if u.email == email]
             if len(exact) != 1:
                 found = ', '.join(u.email for u in users)
@@ -41,7 +32,6 @@ class Command(BaseCommand):
                 f'Refusing: {user.email} is the only active admin. Create another admin first.'
             )
 
-        # The same lookup Django's admin uses for its "are you sure?" page
         collector = NestedObjects(using=DEFAULT_DB_ALIAS)
         collector.collect([user])
         if collector.protected:
@@ -67,7 +57,6 @@ class Command(BaseCommand):
             for line in sorted(unlinked):
                 self.stdout.write(line)
 
-        # Its Django admin history is deleted with it: print it, so the output keeps a copy.
         history = sorted(collector.model_objs.get(LogEntry, ()), key=lambda entry: entry.action_time)
         if history:
             self.stdout.write('Its Django admin history (removed with it; keep this output if you need it):')
@@ -84,8 +73,6 @@ class Command(BaseCommand):
             return
 
         with transaction.atomic():
-            # Block its login tokens first: refreshing a token of a removed account would
-            # otherwise crash the refresh endpoint (500) instead of answering 401.
             tokens = OutstandingToken.objects.filter(user=user).exclude(blacklistedtoken__isnull=False)
             blocked = BlacklistedToken.objects.bulk_create([BlacklistedToken(token=t) for t in tokens])
             user.delete()

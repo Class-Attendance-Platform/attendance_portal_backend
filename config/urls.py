@@ -1,7 +1,5 @@
 from django.urls import path, include
 
-# No Django admin site: the app has its own admin pages, and an open /admin/ login would be a
-# password-guessing route outside the API's sign-in limits.
 urlpatterns = [
     path('api/auth/', include('apps.users.urls.auth')),
     path('api/config/', include('apps.users.urls.config')),
@@ -14,6 +12,5 @@ urlpatterns = [
     path('api/faces/', include('apps.faces.urls')),
 ]
 
-# Errors outside the API views answer JSON with a readable message too (config/errors.py)
 handler404 = 'config.errors.json_not_found'
 handler500 = 'config.errors.json_server_error'

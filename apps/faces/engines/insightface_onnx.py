@@ -1,13 +1,3 @@
-"""
-InsightFace "buffalo_l" models run with onnxruntime + OpenCV (the `insightface`
-package is not needed, so nothing has to be compiled on Windows).
-
-  det_10g.onnx   SCRFD detector: face boxes + 5 landmarks (eyes, nose, mouth corners)
-  w600k_r50.onnx ArcFace recogniser: aligned 112x112 face -> 512-number fingerprint
-
-The models are free for non-commercial / academic use only (InsightFace licence).
-Download them with `python manage.py download_face_models`.
-"""
 from pathlib import Path
 
 import cv2
@@ -18,7 +8,6 @@ from . import DetectedFace, FaceEngineUnavailable
 DETECTOR_FILE = 'det_10g.onnx'
 RECOGNIZER_FILE = 'w600k_r50.onnx'
 
-# Where ArcFace expects the 5 landmarks in its 112x112 input.
 ARCFACE_LANDMARKS = np.array([
     [38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
     [41.5493, 92.3655], [70.7299, 92.2041],
@@ -27,7 +16,6 @@ ARCFACE_LANDMARKS = np.array([
 STRIDES = (8, 16, 32)
 ANCHORS_PER_CELL = 2
 EMBED_BATCH = 32
-
 
 class InsightFaceOnnxEngine:
     name = 'insightface-buffalo_l'
@@ -43,7 +31,7 @@ class InsightFaceOnnxEngine:
                 'Run: python manage.py download_face_models'
             )
         options = ort.SessionOptions()
-        options.log_severity_level = 3  # the detector's fixed-size shape hints are expected to differ
+        options.log_severity_level = 3
         providers = ['CPUExecutionProvider']
         self.detector = ort.InferenceSession(str(model_dir / DETECTOR_FILE), options, providers=providers)
         self.recognizer = ort.InferenceSession(str(model_dir / RECOGNIZER_FILE), options, providers=providers)
@@ -55,7 +43,6 @@ class InsightFaceOnnxEngine:
         self._centers = {}
 
     def analyze(self, image: np.ndarray, max_side: int = 640) -> list[DetectedFace]:
-        """All faces in a BGR image, most confident first."""
         found = self._detect(image, max_side)
         if not found:
             return []
@@ -68,21 +55,17 @@ class InsightFaceOnnxEngine:
             for (box, score, _), crop, emb in zip(found, crops, embeddings)
         ]
 
-    # ── Detection (SCRFD) ────────────────────────────────────────────────────
-
     def _detect(self, image, max_side):
-        # Never enlarge: faces bigger than the detector's largest anchors are missed.
         scale = min(1.0, max_side / max(image.shape[:2]))
         found = self._detect_at(image, scale)
         if not found and min(image.shape[:2]) * scale >= 160:
-            # A close-up face can still be too big: try once more at half size.
             found = self._detect_at(image, scale / 2)
         return found
 
     def _detect_at(self, image, scale):
         h, w = image.shape[:2]
         new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
-        pad_w, pad_h = -(-new_w // 32) * 32, -(-new_h // 32) * 32  # multiples of the largest stride
+        pad_w, pad_h = -(-new_w // 32) * 32, -(-new_h // 32) * 32
         canvas = np.zeros((pad_h, pad_w, 3), dtype=np.uint8)
         canvas[:new_h, :new_w] = cv2.resize(image, (new_w, new_h))
         blob = cv2.dnn.blobFromImage(canvas, 1.0 / 128.0, (pad_w, pad_h), (127.5, 127.5, 127.5), swapRB=True)
@@ -118,7 +101,7 @@ class InsightFaceOnnxEngine:
         if centers is None:
             grid = np.stack(np.mgrid[:rows, :cols][::-1], axis=-1).astype(np.float32)
             centers = np.repeat((grid * stride).reshape(-1, 2), ANCHORS_PER_CELL, axis=0)
-            if len(self._centers) < 100:  # photo sizes vary; keep the cache small
+            if len(self._centers) < 100:
                 self._centers[key] = centers
         return centers
 
@@ -139,8 +122,6 @@ class InsightFaceOnnxEngine:
             order = order[np.where(overlap <= self.nms_threshold)[0] + 1]
         return keep
 
-    # ── Alignment and recognition (ArcFace) ──────────────────────────────────
-
     def _align(self, image, kps):
         matrix = _similarity_transform(kps.astype(np.float32), ARCFACE_LANDMARKS)
         return cv2.warpAffine(image, matrix, (112, 112), borderValue=0.0)
@@ -155,9 +136,7 @@ class InsightFaceOnnxEngine:
             result.extend(vectors.astype(np.float32))
         return result
 
-
 def _similarity_transform(src, dst):
-    """Least-squares rotation + uniform scale + shift mapping src points onto dst (Umeyama)."""
     src_mean, dst_mean = src.mean(axis=0), dst.mean(axis=0)
     src_c, dst_c = src - src_mean, dst - dst_mean
     cov = dst_c.T @ src_c / len(src)

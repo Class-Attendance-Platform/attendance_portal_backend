@@ -1,14 +1,3 @@
-"""
-Error responses: every error carries a readable `message` (API v2 conventions).
-
-    {"success": false, "message": "<one readable sentence>", "code": "<machine_code>"?,
-     "errors": {"field": ["msg"]}?}
-
-- `api_exception_handler` (REST_FRAMEWORK['EXCEPTION_HANDLER']) covers raised errors:
-  validation, not signed in, no permission, not found, throttled, ...
-- Views build their own errors with `error_response()` and `validation_error_response()`.
-- `json_not_found` / `json_server_error` (config/urls.py) cover URLs outside DRF.
-"""
 import math
 import re
 
@@ -18,8 +7,6 @@ from rest_framework import exceptions
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
-# Plain names for field names that would read badly with the default
-# ("student_id" -> "Student ID", not "Student id").
 FIELD_LABELS = {
     'email': 'Email',
     'password': 'Password',
@@ -49,13 +36,11 @@ FIELD_LABELS = {
 }
 NO_LABEL_FIELDS = {'non_field_errors', 'detail', '__all__'}
 
-
 def field_label(name) -> str:
     name = str(name)
     if name in FIELD_LABELS:
         return FIELD_LABELS[name]
     return name.replace('_', ' ').strip().capitalize() or 'This field'
-
 
 def _sentence(text: str) -> str:
     text = str(text).strip()
@@ -63,9 +48,7 @@ def _sentence(text: str) -> str:
         text += '.'
     return text
 
-
 def _first_error(errors, field=None):
-    """(field name, message) of the first error in a DRF error structure."""
     if isinstance(errors, dict):
         for key, value in errors.items():
             found = _first_error(value, key)
@@ -82,9 +65,7 @@ def _first_error(errors, field=None):
         return field, None
     return field, str(errors)
 
-
 def readable_field_error(field, message) -> str:
-    """One field error as a plain sentence: "Student ID is required.", never "student_id: ..."."""
     message = str(message).strip()
     if field is None or isinstance(field, int) or str(field) in NO_LABEL_FIELDS:
         return _sentence(message)
@@ -112,13 +93,11 @@ def readable_field_error(field, message) -> str:
         return _sentence(message.replace('This value', label))
     return _sentence(message)
 
-
 def first_error_message(errors, default='Please check the form and try again.') -> str:
     field, message = _first_error(errors)
     if not message:
         return default
     return readable_field_error(field, message)
-
 
 def error_response(message, status=400, code=None, errors=None, **extra):
     body = {'success': False, 'message': message}
@@ -129,13 +108,10 @@ def error_response(message, status=400, code=None, errors=None, **extra):
     body.update(extra)
     return Response(body, status=status)
 
-
 def validation_error_response(errors, status=400, code=None, message=None, **extra):
-    """400 with field errors; `message` repeats the first one in plain words."""
     if not isinstance(errors, dict):
         errors = {'non_field_errors': errors if isinstance(errors, list) else [errors]}
     return error_response(message or first_error_message(errors), status=status, code=code, errors=errors, **extra)
-
 
 def throttled_message(wait) -> str:
     if not wait:
@@ -146,24 +122,19 @@ def throttled_message(wait) -> str:
     minutes = math.ceil(seconds / 60)
     return f'Too many attempts. Please try again in {minutes} minutes.'
 
-
-# Friendlier words for DRF / SimpleJWT defaults (only used when the detail is not custom).
 DEFAULT_MESSAGES = {
     'not_authenticated': 'Please sign in to continue.',
     'token_not_valid': 'Your sign-in has expired. Please sign in again.',
     'user_not_found': 'This account no longer exists.',
     'user_inactive': 'This account has been disabled. Contact the department office.',
-    # CHECK_REVOKE_TOKEN: the token was made before a password change (apps/users/jwt.py)
     'password_changed': 'Your password was changed. Please sign in again.',
     'permission_denied': 'You do not have permission to do this.',
     'not_found': 'This item was not found.',
 }
 
-
 def _codes(exc):
     detail = getattr(exc, 'detail', None)
     if isinstance(detail, dict) and isinstance(detail.get('code'), str):
-        # SimpleJWT's own errors carry their code as text: {'detail': ..., 'code': 'password_changed'}
         return str(detail['code'])
     try:
         codes = exc.get_codes()
@@ -171,7 +142,7 @@ def _codes(exc):
         return None
     if isinstance(codes, str):
         return codes
-    if isinstance(codes, dict):  # SimpleJWT: {'detail': ..., 'code': 'token_not_valid', ...}
+    if isinstance(codes, dict):
         code = codes.get('code')
         if isinstance(code, str):
             return code
@@ -179,11 +150,10 @@ def _codes(exc):
             return str(code[0])
     return None
 
-
 def api_exception_handler(exc, context):
     response = drf_exception_handler(exc, context)
     if response is None:
-        return None  # not an API error: Django answers 500 (json_server_error)
+        return None
 
     data = response.data
     if isinstance(exc, exceptions.ValidationError):
@@ -195,7 +165,6 @@ def api_exception_handler(exc, context):
     if isinstance(exc, exceptions.Throttled):
         message, code = throttled_message(exc.wait), 'throttled'
     elif isinstance(exc, Http404):
-        # get_object_or_404 says "No StudentProfile matches the given query."
         message, code = DEFAULT_MESSAGES['not_found'], 'not_found'
     elif isinstance(exc, DjangoPermissionDenied):
         message, code = DEFAULT_MESSAGES['permission_denied'], 'permission_denied'
@@ -217,12 +186,10 @@ def api_exception_handler(exc, context):
     response.data = body
     return response
 
-
 def json_not_found(request, exception=None):
     return JsonResponse(
         {'success': False, 'message': 'This address does not exist.', 'code': 'not_found'}, status=404
     )
-
 
 def json_server_error(request):
     return JsonResponse(

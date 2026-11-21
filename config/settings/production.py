@@ -1,7 +1,3 @@
-"""
-Production settings (the VPS). Every value comes from .env; see .env.example.
-Run with DJANGO_SETTINGS_MODULE=config.settings.production (the systemd service sets it).
-"""
 from decouple import Csv, config
 
 from .base import *  # noqa: F401,F403
@@ -11,26 +7,18 @@ DEBUG = False
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
 
-# Only the web app may call the API from a browser. The Android app sends no
-# Origin header and the desktop app loads the web app, so they need nothing here.
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')  # Django forms (none mounted now)
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')
 
-# nginx terminates HTTPS and forwards the original scheme
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-# Throttles count per visitor IP: take the address nginx appended to X-Forwarded-For
-# (one proxy), not the whole header, which a visitor could fill with anything.
 REST_FRAMEWORK = {**REST_FRAMEWORK, 'NUM_PROXIES': config('NUM_PROXIES', default=1, cast=int)}
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
-# Browsers then use HTTPS for the API for a year, even when someone types http:// (only this host:
-# no includeSubDomains, the owner's other sakibkx.tech sites are not affected).
 SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=31536000, cast=int)
 
-# Static files (DRF's browsable pages) served by the app itself
 MIDDLEWARE = [
-    MIDDLEWARE[0],  # SecurityMiddleware first
+    MIDDLEWARE[0],
     'whitenoise.middleware.WhiteNoiseMiddleware',
     *MIDDLEWARE[1:],
 ]
@@ -39,7 +27,6 @@ STORAGES = {
     'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage'},
 }
 
-# Errors go to the service log (journalctl -u attendanceportal-api)
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

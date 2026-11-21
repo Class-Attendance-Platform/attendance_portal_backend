@@ -1,24 +1,3 @@
-"""
-Fills a LOCAL SQLite database with demo data for screen previews (dry run unless --apply).
-
-    python manage.py migrate --settings=config.settings.test
-    python manage.py seed_local_demo --settings=config.settings.test           # dry run
-    python manage.py seed_local_demo --settings=config.settings.test --apply   # write
-
-Refuses to run against anything but SQLite, so it can never touch the real database.
-
-What it makes (every login uses DEMO_PASSWORD):
-- admin@demo.local; teacher@demo.local and teacher2@demo.local
-- 12 approved students student2302001..012@demo.local (2302012 joined the class late)
-- an active semester Level 3 · Term I · 2025-26 (started six weeks ago) with CSE301, CSE303
-  (teacher@) and CSE305 (teacher2@), about 10 past class dates each: QR, typed code, face,
-  online and roll-call classes, one day with two sessions, two teacher corrections
-- a finished semester Level 2 · Term II · 2024-25 (CSE201, CSE203) whose students were promoted
-- waiting for approval: pending.student@demo.local, pending.teacher@demo.local
-- a soft-deleted student: student2302013@demo.local
-Dates are counted back from today. Running it again keeps what exists; attendance is only
-added to courses that have none.
-"""
 import random
 import secrets
 from datetime import datetime, time, timedelta
@@ -39,7 +18,6 @@ from apps.users.services import deactivate_user
 DEMO_PASSWORD = 'Demo-pass-2026'
 DOMAIN = 'demo.local'
 
-# (student id, first name, last name, how often they come to class)
 STUDENTS = [
     (2302001, 'Ayesha', 'Rahman', 0.95),
     (2302002, 'Tanvir', 'Hasan', 0.68),
@@ -53,21 +31,19 @@ STUDENTS = [
     (2302010, 'Imran', 'Kabir', 0.45),
     (2302011, 'Sumaiya', 'Khatun', 0.86),
 ]
-LATE_JOINER = (2302012, 'Rafiq', 'Uddin', 0.9)        # joined the current semester LATE_JOIN_DAYS ago
-DELETED_STUDENT = (2302013, 'Shakil', 'Ahmed', 0.7)   # soft-deleted at the end (history kept)
+LATE_JOINER = (2302012, 'Rafiq', 'Uddin', 0.9)
+DELETED_STUDENT = (2302013, 'Shakil', 'Ahmed', 0.7)
 PENDING_STUDENT = (2302014, 'Nadia', 'Sultana', f'pending.student@{DOMAIN}')
-# (email, first name, last name, employee id)
 TEACHERS = [
     (f'teacher@{DOMAIN}', 'Demo', 'Teacher', 'EMP-DEMO'),
     (f'teacher2@{DOMAIN}', 'Farhana', 'Akter', 'EMP-DEMO-2'),
 ]
 PENDING_TEACHER = (f'pending.teacher@{DOMAIN}', 'Kamal', 'Hossain', 'EMP-PENDING')
 
-SEMESTER_WEEKS = 6     # the current semester started six weeks ago (the students were promoted then)
+SEMESTER_WEEKS = 6
 LATE_JOIN_DAYS = 17
 CURRENT = ('Third', 'I', '2025-26')
 PREVIOUS = ('Second', 'II', '2024-25')
-# (code, title, teacher index, weekdays (Monday = 0), class dates, class time)
 CURRENT_COURSES = [
     ('CSE301', 'Software Engineering', 0, (6, 1), 10, time(10, 0)),
     ('CSE303', 'Database Systems', 0, (0, 2), 10, time(11, 30)),
@@ -77,31 +53,23 @@ PREVIOUS_COURSES = [
     ('CSE201', 'Data Structures', 0, (6, 2), 8, time(10, 0)),
     ('CSE203', 'Digital Logic Design', 1, (0, 3), 8, time(12, 0)),
 ]
-# How each class date is taken, in turn: live QR session (in class or online, the students scan
-# the QR or type the code), face photo, roll call, or a QR session followed by a face photo.
 CLASS_KINDS = ['QR', 'FACE', 'QR', 'ROLL_CALL', 'ONLINE', 'QR', 'QR+FACE', 'QR', 'FACE', 'QR']
 
-
 def find_semester(level, term, session):
-    """The demo semester; for the current one also Level 3 Term I without a session (the older seed's)."""
     found = Semester.objects.filter(level=level, semester=term, deleted=False)
     older = found.filter(session='').first() if (level, term, session) == CURRENT else None
     return found.filter(session=session).first() or older
 
-
 def student_email(student_id):
     return f'student{student_id}@{DOMAIN}'
 
-
 def past_dates(weekdays, count, last_day, first_day):
-    """The latest `count` dates on these weekdays between first_day and last_day, oldest first."""
     days, day = [], last_day
     while len(days) < count and day >= first_day:
         if day.weekday() in weekdays:
             days.append(day)
         day -= timedelta(days=1)
     return sorted(days)
-
 
 class Command(BaseCommand):
     help = 'Fill a local SQLite database with demo data for previews (dry run unless --apply).'
@@ -129,10 +97,7 @@ class Command(BaseCommand):
         self.stdout.write(f'  waiting for approval (cannot sign in yet): {PENDING_STUDENT[3]}, {PENDING_TEACHER[0]}')
         self.stdout.write(f'  soft-deleted: {student_email(DELETED_STUDENT[0])}')
 
-    # ── Dry run ───────────────────────────────────────────────────────────────
-
     def _logins(self):
-        """(email, what it is) for every account this command makes."""
         rows = [(f'admin@{DOMAIN}', 'admin')]
         rows += [(email, 'teacher') for email, _, _, _ in TEACHERS]
         rows += [(student_email(sid), 'student') for sid, _, _, _ in STUDENTS]
@@ -161,8 +126,6 @@ class Command(BaseCommand):
             f'(only for courses without attendance; counted back from {today.isoformat()})'
         )
 
-    # ── Writing ───────────────────────────────────────────────────────────────
-
     def _seed(self, today):
         admin = self._user(f'admin@{DOMAIN}', User.Role.ADMIN, 'Demo', 'Admin', is_staff=True, is_superuser=True)
         AdminProfile.objects.get_or_create(user=admin)
@@ -181,8 +144,6 @@ class Command(BaseCommand):
         previous = self._semester(PREVIOUS, previous_start, previous_end)
         current = self._semester(CURRENT, start, None)
 
-        # Promotion: everyone left Level 2 Term II when Level 3 Term I started; the late joiner
-        # came later (counted from the day they joined).
         previous_room, current_room = main_classroom(previous), main_classroom(current)
         for profile in regular + [deleted]:
             StudentClassroom.objects.get_or_create(student=profile, classroom=previous_room,
@@ -256,10 +217,7 @@ class Command(BaseCommand):
             )
         return ci
 
-    # ── Attendance ────────────────────────────────────────────────────────────
-
     def _attendance(self, ci, days, class_time, rates):
-        """Class dates taken in turn by every CLASS_KINDS method; two corrections in CSE301/CSE303."""
         teacher_user = ci.teacher.user if ci.teacher_id else None
         for index, day in enumerate(days):
             rng = random.Random(f'{ci.course.code}:{index}')
@@ -271,20 +229,17 @@ class Command(BaseCommand):
 
             if kind in ('QR', 'ONLINE', 'QR+FACE'):
                 online = kind == 'ONLINE'
-                # Online, most students type the code; in class most scan the QR
                 methods = {s.student_id: ('CODE' if rng.random() < (0.7 if online else 0.2) else 'QR')
                            for s in present}
                 self._live_session(ci, day, starts, present, methods, rng, online=online)
             if kind == 'FACE':
                 self._face_session(ci, day, starts, present)
             if kind == 'QR+FACE':
-                # A face photo later the same day finds two who missed the QR
                 late_comers = [s for s in students if s not in present][:2]
                 self._face_session(ci, day, starts + timedelta(minutes=45), present + late_comers)
             if kind == 'ROLL_CALL':
                 roll_call(ci, day, [s.id for s in present], teacher_user)
 
-            # A teacher correction: someone marked absent was in class after all
             if index == 1 and ci.course.code in ('CSE301', 'CSE303'):
                 absent = [s for s in students if s not in present]
                 if absent:

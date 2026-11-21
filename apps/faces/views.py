@@ -24,9 +24,7 @@ from config.errors import error_response
 logger = logging.getLogger(__name__)
 MAX_CLASS_PHOTOS = 3
 
-
 def run_face_task(task):
-    """Runs a face operation and turns known problems into clear API errors."""
     try:
         return task()
     except FaceError as e:
@@ -38,12 +36,7 @@ def run_face_task(task):
             'message': 'Face recognition is not set up on the server yet. Please tell your admin.',
         }, status=503)
 
-
 def _course(request):
-    """
-    The course named by course_info_id, or None if the id is missing or malformed, or the
-    course-info, its course or its semester is deleted.
-    """
     try:
         course_id = uuid_lib.UUID(str(request.data.get('course_info_id')))
     except ValueError:
@@ -52,9 +45,7 @@ def _course(request):
         id=course_id, deleted=False, course__deleted=False, semester__deleted=False,
     ).first()
 
-
 def _course_error(request, ci):
-    """An error response if the course can't take face attendance for this user, else None."""
     if ci is None:
         return error_response('Course not found.', status=404, code='not_found')
     if not can_manage_course(request.user, ci):
@@ -63,18 +54,13 @@ def _course_error(request, ci):
         return semester_finished_response()
     return None
 
-
 def _profile(request):
     return StudentProfile.objects.filter(user=request.user, user__deleted=False).first()
 
-
 class MyFaceView(APIView):
-    """A student's own face registration: status, register (3 photos), delete."""
     permission_classes = [IsStudent]
 
     def get_throttles(self):
-        # Only registering runs the face engine; the status (asked on every visit to home,
-        # account and the face page) and deleting are not limited.
         return [FaceRegisterThrottle()] if self.request.method == 'POST' else []
 
     def get(self, request):
@@ -100,9 +86,7 @@ class MyFaceView(APIView):
         StudentFace.objects.filter(student=student).delete()
         return Response({'success': True, 'message': 'Your face data was deleted.'})
 
-
 class AdminFaceStatusView(APIView):
-    """Which students have registered a face: {student profile id: registered_at}."""
     permission_classes = [IsAdmin]
 
     def get(self, request):
@@ -111,9 +95,7 @@ class AdminFaceStatusView(APIView):
             registered.setdefault(str(student_id), created.isoformat())
         return Response({'success': True, 'registered': registered})
 
-
 class AdminStudentFaceView(APIView):
-    """Admin: see a student's registered face crops, or reset them."""
     permission_classes = [IsAdmin]
 
     def get(self, request, uuid):
@@ -130,9 +112,7 @@ class AdminStudentFaceView(APIView):
         deleted, _ = StudentFace.objects.filter(student=student).delete()
         return Response({'success': True, 'message': 'Face data reset.', 'deleted': deleted})
 
-
 class RecognizeClassView(APIView):
-    """Teacher sends 1-3 class photos; returns suggested attendance (nothing is saved)."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request):
@@ -147,9 +127,7 @@ class RecognizeClassView(APIView):
             )
         return run_face_task(lambda: Response({'success': True, **services.recognize_class(ci, photos)}))
 
-
 class ConfirmFaceAttendanceView(APIView):
-    """Teacher confirms the reviewed list; saves it as today's FACE session."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request):
@@ -188,7 +166,6 @@ class ConfirmFaceAttendanceView(APIView):
                 'success': True,
                 'session_id': str(session.id),
                 'date': str(session.date),
-                # Deleted accounts keep their logs from an earlier save of the day but are not counted
                 'total_present': session.logs.filter(status='PRESENT', student__user__deleted=False).count(),
                 'skipped': session.skipped,
             }, status=201)

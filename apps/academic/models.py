@@ -5,12 +5,11 @@ from django.db.models import Q
 LEVEL_NUMBERS = {'First': 1, 'Second': 2, 'Third': 3, 'Fourth': 4}
 TERM_NUMBERS = {'I': 1, 'II': 2}
 
-
 class Semester(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    level = models.CharField(max_length=20)       # e.g. "Third"
-    semester = models.CharField(max_length=5)     # e.g. "I"
-    session = models.CharField(max_length=20, blank=True, default='')  # academic year, e.g. "2025-26"
+    level = models.CharField(max_length=20)
+    semester = models.CharField(max_length=5)
+    session = models.CharField(max_length=20, blank=True, default='')
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
@@ -24,7 +23,6 @@ class Semester(models.Model):
 
     @property
     def label(self):
-        """What people read, e.g. "Level 3 · Term I · 2025-26" (the session part only when set)."""
         level = LEVEL_NUMBERS.get(self.level, self.level)
         parts = [f'Level {level}', f'Term {self.semester}']
         if self.session:
@@ -32,17 +30,13 @@ class Semester(models.Model):
         return ' · '.join(parts)
 
     def sort_key(self):
-        """Level then term in teaching order (First..Fourth, I..II), unknown values last."""
         return LEVEL_NUMBERS.get(self.level, 99), TERM_NUMBERS.get(self.semester, 99)
 
-
 def sort_semesters(semesters):
-    """Active first, then by session (newest first, none last), level, term."""
     ordered = sorted(semesters, key=lambda s: s.sort_key())
-    ordered.sort(key=lambda s: s.session, reverse=True)  # stable; a blank session sorts last
+    ordered.sort(key=lambda s: s.session, reverse=True)
     ordered.sort(key=lambda s: not s.is_active)
     return ordered
-
 
 class Course(models.Model):
     class Credits(models.TextChoices):
@@ -67,7 +61,6 @@ class Course(models.Model):
     def __str__(self):
         return f'{self.code} — {self.title}'
 
-
 class Classroom(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
@@ -80,14 +73,7 @@ class Classroom(models.Model):
     def __str__(self):
         return f'{self.name} ({self.semester})'
 
-
 class MembershipQuerySet(models.QuerySet):
-    """
-    A membership covers the dates joined_at <= day < left_at. joined_at null = from the
-    start; left_at null = still a member. Former members keep their row (history). Numbers
-    use StudentClassroom.counts_on (on the join day only classes that logged them count).
-    """
-
     def current(self):
         return self.filter(left_at__isnull=True)
 
@@ -101,17 +87,11 @@ class MembershipQuerySet(models.QuerySet):
         )
 
     def active_accounts(self):
-        """Leaves out soft-deleted student accounts."""
         return self.filter(student__user__deleted=False)
 
     def class_list(self, semester):
-        """
-        Whom a semester's (or its courses') lists and numbers count: its current members while
-        it is active; once finished, everyone who was in it (promotion marks them as left).
-        """
         members = self.active_accounts()
         return members.current() if semester.is_active else members
-
 
 class StudentClassroom(models.Model):
     student = models.ForeignKey(
@@ -124,8 +104,8 @@ class StudentClassroom(models.Model):
         on_delete=models.CASCADE,
         related_name='memberships'
     )
-    joined_at = models.DateField(null=True, blank=True)  # null = from the start
-    left_at = models.DateField(null=True, blank=True)    # null = still a member
+    joined_at = models.DateField(null=True, blank=True)
+    left_at = models.DateField(null=True, blank=True)
 
     objects = MembershipQuerySet.as_manager()
 
@@ -137,20 +117,13 @@ class StudentClassroom(models.Model):
         return self.left_at is None
 
     def covers(self, day):
-        """Was the student a member on this date?"""
         return (self.joined_at is None or self.joined_at <= day) and (self.left_at is None or day < self.left_at)
 
     def counts_on(self, day, has_log) -> bool:
-        """
-        Does a course's class on this date count for the student (held for them)? Inside the
-        membership; on the join day only if they have a log for it that day: a class held
-        before they were added that day has none (everything run after they joined logs them).
-        """
         return self.covers(day) and (day != self.joined_at or has_log)
 
     def __str__(self):
         return f'{self.student} in {self.classroom}'
-
 
 class CourseInfo(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

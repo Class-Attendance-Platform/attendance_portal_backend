@@ -16,31 +16,21 @@ GENERATORS = {
     'docx': export_docx,
 }
 
-
 class FileTypeNegotiation(DefaultContentNegotiation):
-    """
-    Here `?format=` names the file to export (pdf, xlsx, ...), not one of DRF's renderers
-    (DRF would answer 404 for "pdf"). Files are returned as they are; errors are JSON.
-    """
-
     def select_renderer(self, request, renderers, format_suffix=None):
         renderer = renderers[0]
         return renderer, renderer.media_type
 
-
 class ExportReportView(APIView):
-    """GET /reports/course-info/<id>/export/?format=pdf|xlsx|csv|docx&date=YYYY-MM-DD (API v2 section 8)."""
     permission_classes = [IsAdminOrTeacher]
     renderer_classes = [JSONRenderer]
     content_negotiation_class = FileTypeNegotiation
 
     def get(self, request, uuid):
-        # 404 for a deleted course, course-info or semester; 403 for another teacher's course
         ci, error = teacher_course(request, uuid)
         if error:
             return error
 
-        # `export_format` is the old app's name for it
         params = request.query_params
         fmt = (params.get('format') or params.get('export_format') or 'xlsx').lower().strip()
         if fmt not in GENERATORS:

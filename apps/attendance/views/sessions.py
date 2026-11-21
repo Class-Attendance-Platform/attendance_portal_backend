@@ -1,7 +1,3 @@
-"""
-Live attendance sessions with the rotating 6-digit code (API v2 section 5) and the
-course history (section 6).
-"""
 import datetime as dt
 import re
 import secrets
@@ -37,46 +33,34 @@ from config.errors import error_response, validation_error_response
 QR_MODES = (AttendanceSession.Mode.QR_ONLINE, AttendanceSession.Mode.QR_OFFLINE)
 CODE_PATTERN = re.compile(r'^[0-9]{6}$')
 
-
 def normalize_code(text) -> str:
-    """The typed code without spaces or dashes, other scripts' digits (e.g. Bengali ২৩৪) as 0-9."""
     text = re.sub(r'[\s-]', '', text)
     return ''.join(str(unicodedata.decimal(ch)) if ch.isdecimal() else ch for ch in text)
-
 
 def busy_response():
     return error_response('Too many requests at once. Please try again.', status=503, code='busy')
 
-
 def session_ended_response(message='This session has ended.'):
     return error_response(message, status=410, code='session_ended')
 
-
 def semester_finished_response():
-    """No new live or face sessions for a finished semester (roll call and corrections stay)."""
     return error_response(
         'This semester is finished. Use roll call to add or fix a class.', status=400, code='semester_finished',
     )
 
-
 def cancelled_response():
     return error_response('This session was cancelled.', status=404, code='not_found')
 
-
 def managed_session(request, uuid):
-    """(session, None) for the course's teacher or an admin, else (None, error response)."""
     session = get_object_or_404(AttendanceSession.objects.select_related('course_info'), id=uuid)
     if not can_manage_course(request.user, session.course_info):
         return None, not_your_course_response()
     return session, None
 
-
 def student_brief(student) -> dict:
     return {'profile_id': str(student.id), 'student_id': student.student_id, 'name': person_name(student.user)}
 
-
 class StartSessionView(APIView):
-    """Teacher starts a live session: {course_info_id, delivery, duration_minutes}."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request):
@@ -96,12 +80,9 @@ class StartSessionView(APIView):
 
         duration = data['duration_minutes'] * 60
         with transaction.atomic():
-            # One start at a time (only this row: no Meta ordering joins under FOR UPDATE)
             CourseInfo.objects.select_for_update().filter(pk=ci.pk).order_by().first()
-            # Finished meanwhile (read again under the lock)
             if not Semester.objects.filter(pk=ci.semester_id, is_active=True).exists():
                 return semester_finished_response()
-            # A live session blocks a new one; an ended one is saved first.
             for running in AttendanceSession.objects.filter(course_info=ci, is_active=True):
                 if session_is_live(running):
                     return error_response(
@@ -121,9 +102,7 @@ class StartSessionView(APIView):
 
         return Response({'success': True, 'session': session_payload(session)}, status=201)
 
-
 class SessionCodeView(APIView):
-    """The current 6-digit code and the QR's check-in link (poll every few seconds)."""
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
@@ -145,9 +124,7 @@ class SessionCodeView(APIView):
             'period': codes.PERIOD,
         })
 
-
 class SessionStatusView(APIView):
-    """Live: who checked in and who not. Ended: saves the session (once) and says so."""
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):
@@ -196,7 +173,7 @@ class SessionStatusView(APIView):
                 'method': log.method or 'QR',
                 '_at': log.time or dt.time.min,
             })
-        checked_in.sort(key=lambda row: row.pop('_at'), reverse=True)  # newest first
+        checked_in.sort(key=lambda row: row.pop('_at'), reverse=True)
         return Response({
             'success': True,
             'active': True,
@@ -211,9 +188,7 @@ class SessionStatusView(APIView):
             },
         })
 
-
 class ExtendSessionView(APIView):
-    """Adds minutes to a live session (30 minutes in total at most)."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request, uuid):
@@ -247,9 +222,7 @@ class ExtendSessionView(APIView):
             'time_left': session_time_left(locked),
         })
 
-
 class LiveMarkView(APIView):
-    """Teacher checks a student in during the live session (method TEACHER, saved with it)."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request, uuid):
@@ -288,9 +261,7 @@ class LiveMarkView(APIView):
             },
         })
 
-
 class StopSessionView(APIView):
-    """Teacher stops session — commits all submissions to DB."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request, uuid):
@@ -313,9 +284,7 @@ class StopSessionView(APIView):
             'total_present': present_count,
         })
 
-
 class CancelSessionView(APIView):
-    """Teacher discards session — neither the session nor its check-ins stay."""
     permission_classes = [IsAdminOrTeacher]
 
     def post(self, request, uuid):
@@ -332,13 +301,7 @@ class CancelSessionView(APIView):
             )
         return Response({'success': True, 'message': 'Session cancelled.', 'session_id': str(session.id)})
 
-
 class CheckInView(APIView):
-    """
-    Student check-in (API v2 section 5).
-    With `session_id` (QR link): QR method, matching code.
-    Without `session_id` (manual code): CODE method, live sessions looked up.
-    """
     permission_classes = [IsStudent]
     throttle_classes = [CheckInThrottle]
 
@@ -362,7 +325,7 @@ class CheckInView(APIView):
                 course_info__deleted=False, course_info__course__deleted=False,
                 course_info__semester__deleted=False,
             ).first()
-            if session is None:  # e.g. cancelled
+            if session is None:
                 return session_ended_response()
             if not can_join_live(student, session):
                 return error_response('You are not in this course.', status=403, code='not_enrolled')
@@ -377,7 +340,6 @@ class CheckInView(APIView):
                 session = self.find_by_code(student, code)
             if session is None:
                 if not self.on_a_class_list(student):
-                    # No code can work for them: say why instead of "wrong or expired"
                     return error_response(
                         'You are not on a class list yet. Ask the department office to add you.',
                         status=403, code='not_enrolled',
@@ -410,7 +372,6 @@ class CheckInView(APIView):
 
     @staticmethod
     def find_by_code(student, code):
-        """The student's live session (own current courses) whose current code is `code`."""
         classroom_ids = StudentClassroom.objects.filter(student=student).current().values('classroom_id')
         sessions = AttendanceSession.objects.filter(
             is_active=True, mode=AttendanceSession.Mode.QR_ONLINE, qr_token__isnull=False,
@@ -424,27 +385,19 @@ class CheckInView(APIView):
 
     @staticmethod
     def on_a_class_list(student) -> bool:
-        """A current member of the class group of an active semester (as the admin's students list shows)."""
         return StudentClassroom.objects.filter(
             student=student, classroom__deleted=False,
             classroom__semester__is_active=True, classroom__semester__deleted=False,
         ).current().exists()
 
-
 StudentCheckInView = CheckInView
-
 
 def code_invalid_response():
     return error_response(
         'This code is wrong or has expired. Check the newest code.', status=400, code='code_invalid',
     )
 
-
 class CourseAttendanceHistoryView(APIView):
-    """
-    The course's classes by date (newest first): each day's saved sessions and one row per
-    student (one date = one class). ?date=YYYY-MM-DD and ?student_id=<profile id> narrow it.
-    """
     permission_classes = [IsAdminOrTeacher]
 
     def get(self, request, uuid):

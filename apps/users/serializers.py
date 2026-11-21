@@ -13,12 +13,7 @@ from .services import iso
 
 User = get_user_model()
 
-
-# ── What the API sends ────────────────────────────────────────────────────────
-
-
 def user_data(user) -> dict:
-    """The signed-in user (login and /auth/me/)."""
     student_profile = None
     if user.role == User.Role.STUDENT and hasattr(user, 'student_profile'):
         p = user.student_profile
@@ -45,7 +40,6 @@ def user_data(user) -> dict:
         'teacher_profile': teacher_profile,
     }
 
-
 def _account_fields(user) -> dict:
     return {
         'user_id': str(user.id),
@@ -55,7 +49,6 @@ def _account_fields(user) -> dict:
         'userName': user.get_full_name() or user.username,
     }
 
-
 def _status_fields(user) -> dict:
     return {
         'is_verified': user.is_verified,
@@ -64,9 +57,7 @@ def _status_fields(user) -> dict:
         'last_login': iso(user.last_login),
     }
 
-
 def student_row(profile, semester=None, face_registered=False) -> dict:
-    """Admin students list row. `semester`: the active semester they are in, if any."""
     user = profile.user
     return {
         'id': str(profile.id),
@@ -79,7 +70,6 @@ def student_row(profile, semester=None, face_registered=False) -> dict:
         'semester': {'id': str(semester.id), 'label': semester.label} if semester else None,
     }
 
-
 def teacher_row(profile, course_count=0) -> dict:
     user = profile.user
     return {
@@ -89,7 +79,6 @@ def teacher_row(profile, course_count=0) -> dict:
         **_status_fields(user),
         'course_count': course_count,
     }
-
 
 def pending_user_row(user) -> dict:
     row = {
@@ -107,17 +96,11 @@ def pending_user_row(user) -> dict:
         row['employee_id'] = user.teacher_profile.employee_id
     return row
 
-
-# ── Uniqueness (emails ignore capitals; the username is the email) ───────────
-# Each returns the account that already has the value, or None.
-
-
 def email_owner(email, exclude_user=None):
     qs = User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email))
     if exclude_user is not None:
         qs = qs.exclude(pk=exclude_user.pk)
     return qs.first()
-
 
 def student_id_owner(student_id, exclude_profile=None):
     qs = StudentProfile.objects.select_related('user').filter(student_id=student_id)
@@ -126,7 +109,6 @@ def student_id_owner(student_id, exclude_profile=None):
     profile = qs.first()
     return profile.user if profile else None
 
-
 def employee_id_owner(employee_id, exclude_profile=None):
     qs = TeacherProfile.objects.select_related('user').filter(employee_id__iexact=employee_id)
     if exclude_profile is not None:
@@ -134,17 +116,12 @@ def employee_id_owner(employee_id, exclude_profile=None):
     profile = qs.first()
     return profile.user if profile else None
 
-
 def deleted_hint(role) -> str:
-    """For admins: the account holding a value is deleted, so restoring it is the way (not a new one)."""
     page = 'Teachers' if role == User.Role.TEACHER else 'Students'
     return f'It belongs to a deleted account: restore it on the {page} page (Status: Deleted).'
 
-
 def taken(message, owner, for_admin) -> str:
-    """The "already exists" message; an admin also learns when that account is deleted."""
     return f'{message} {deleted_hint(owner.role)}' if for_admin and owner.deleted else message
-
 
 LEVEL_ERRORS = {'invalid_choice': 'Level must be First, Second, Third or Fourth.'}
 TERM_ERRORS = {'invalid_choice': 'Term must be I or II.'}
@@ -153,39 +130,25 @@ EMAIL_TAKEN = 'An account with this email already exists.'
 STUDENT_ID_TAKEN = 'A student with this student ID already exists.'
 EMPLOYEE_ID_TAKEN = 'A teacher with this employee ID already exists.'
 
-# Invisible control characters (a bell, a tab, ...) in a name would break the Excel and Word exports.
 CONTROL_CHARACTERS = re.compile('[\x00-\x1f\x7f-\x9f]')
 NAME_HAS_CONTROL_CHARACTER = 'This name contains a hidden control character. Type it again without it.'
-
 
 def no_control_characters(value):
     if CONTROL_CHARACTERS.search(value):
         raise serializers.ValidationError(NAME_HAS_CONTROL_CHARACTER)
 
-
 def password_errors(password, user):
-    """Django's password rules (8+ characters, not common, not all digits, not like the name)."""
     try:
         validate_password(password, user=user)
     except DjangoValidationError as e:
         return list(e.messages)
     return []
 
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
-
-
 class LoginSerializer(serializers.Serializer):
-    # Not an EmailField: a typo should read "Email or password is incorrect."
     email = serializers.CharField(max_length=254)
     password = serializers.CharField(trim_whitespace=False, max_length=128)
 
-
 class NewAccountSerializer(serializers.Serializer):
-    """
-    A student or teacher account with its profile, made in one transaction.
-    Sign-up and admin creation both create verified accounts; `verified=True` marks admin calls.
-    """
     role = serializers.CharField()
     email = serializers.EmailField(max_length=EMAIL_MAX_LENGTH)
     password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
@@ -193,11 +156,9 @@ class NewAccountSerializer(serializers.Serializer):
     last_name = serializers.CharField(
         max_length=150, required=False, allow_blank=True, default='', validators=[no_control_characters],
     )
-    # Students
     student_id = serializers.IntegerField(min_value=1, max_value=2147483647, required=False)
     current_level = serializers.ChoiceField(choices=LEVELS, required=False, error_messages=LEVEL_ERRORS)
     current_semester = serializers.ChoiceField(choices=TERMS, required=False, error_messages=TERM_ERRORS)
-    # Teachers
     employee_id = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
     def __init__(self, *args, verified=None, **kwargs):
@@ -218,7 +179,6 @@ class NewAccountSerializer(serializers.Serializer):
     def validate(self, attrs):
         errors = {}
         role = attrs['role']
-        # Admins create verified accounts; only they are told that a clashing account is deleted.
         for_admin = bool(self.verified)
         if role == User.Role.STUDENT:
             for name, label in (('student_id', 'Student ID'), ('current_level', 'Level'), ('current_semester', 'Term')):
@@ -280,37 +240,26 @@ class NewAccountSerializer(serializers.Serializer):
                 TeacherProfile.objects.create(user=user, employee_id=validated_data['employee_id'])
         return user
 
-
 class MeUpdateSerializer(serializers.Serializer):
-    """Users may change only their name."""
     first_name = serializers.CharField(max_length=150, required=False, validators=[no_control_characters])
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, validators=[no_control_characters])
-
 
 class PasswordChangeSerializer(serializers.Serializer):
     current_password = serializers.CharField(trim_whitespace=False, max_length=128)
     new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
-
 class PasswordForgotSerializer(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
-
 
 class PasswordResetSerializer(serializers.Serializer):
     uid = serializers.CharField(max_length=200)
     token = serializers.CharField(max_length=200)
     new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
-
 class NewPasswordSerializer(serializers.Serializer):
     new_password = serializers.CharField(trim_whitespace=False, max_length=128)
 
-
-# ── Admin: partial updates ────────────────────────────────────────────────────
-
-
 class _ProfileUpdateSerializer(serializers.Serializer):
-    """PATCH: any subset of the fields; the instance is a Student/TeacherProfile."""
     email = serializers.EmailField(max_length=EMAIL_MAX_LENGTH, required=False)
     first_name = serializers.CharField(max_length=150, required=False, validators=[no_control_characters])
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, validators=[no_control_characters])
@@ -344,7 +293,6 @@ class _ProfileUpdateSerializer(serializers.Serializer):
                 instance.save(update_fields=profile_changed)
         return instance
 
-
 class StudentUpdateSerializer(_ProfileUpdateSerializer):
     student_id = serializers.IntegerField(min_value=1, max_value=2147483647, required=False)
     current_level = serializers.ChoiceField(choices=LEVELS, required=False, error_messages=LEVEL_ERRORS)
@@ -355,7 +303,6 @@ class StudentUpdateSerializer(_ProfileUpdateSerializer):
         if owner:
             raise serializers.ValidationError(taken(STUDENT_ID_TAKEN, owner, for_admin=True))
         return value
-
 
 class TeacherUpdateSerializer(_ProfileUpdateSerializer):
     employee_id = serializers.CharField(max_length=50, required=False)
@@ -368,10 +315,6 @@ class TeacherUpdateSerializer(_ProfileUpdateSerializer):
         if owner:
             raise serializers.ValidationError(taken(EMPLOYEE_ID_TAKEN, owner, for_admin=True))
         return value
-
-
-# ── Device Binding ────────────────────────────────────────────────────────────
-
 
 class DeviceBindingSerializer(serializers.ModelSerializer):
     class Meta:

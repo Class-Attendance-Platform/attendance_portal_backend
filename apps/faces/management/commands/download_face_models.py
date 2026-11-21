@@ -1,13 +1,3 @@
-"""
-Downloads the InsightFace "buffalo_l" pack and keeps the two models face
-attendance uses (about 180 MB) in settings.FACE_MODEL_DIR (default: face_models/).
-
-    python manage.py download_face_models
-    python manage.py download_face_models --zip C:\\Downloads\\buffalo_l.zip   # already downloaded
-
-The models are free for non-commercial / academic use only (InsightFace licence).
-Writes only local files; it does not touch any database.
-"""
 import hashlib
 import shutil
 import tempfile
@@ -19,11 +9,10 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 PACK_URL = 'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip'
-FILES = {  # file in the zip -> expected SHA-256
+FILES = {
     'det_10g.onnx': '5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91',
     'w600k_r50.onnx': '4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43',
 }
-
 
 def sha256(path):
     digest = hashlib.sha256()
@@ -31,7 +20,6 @@ def sha256(path):
         for chunk in iter(lambda: f.read(1 << 20), b''):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 class Command(BaseCommand):
     help = 'Download the face recognition models (InsightFace buffalo_l, about 290 MB once).'

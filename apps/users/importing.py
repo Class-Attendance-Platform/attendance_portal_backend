@@ -1,12 +1,3 @@
-"""
-Admin student import from a .csv or .xlsx file (POST /api/admin/students/import/).
-
-The first row names the columns (any order, any capitals): student_id, name (or
-first_name + last_name), email, level, term. Each row is checked and marked
-"create", "exists" (a student with that student id or email is already there; skipped)
-or "error". Nothing is written unless the admin applies; then the "create" rows
-become approved accounts with random temporary passwords, shown once.
-"""
 import csv
 import io
 import re
@@ -45,15 +36,10 @@ for _number, _level in enumerate(LEVELS, start=1):
 TERM_WORDS = {'i': 'I', '1': 'I', 'term i': 'I', 'term 1': 'I', 'ii': 'II', '2': 'II', 'term ii': 'II', 'term 2': 'II'}
 assert set(TERM_WORDS.values()) == set(TERMS)
 
-
 class ImportFileError(Exception):
     def __init__(self, message):
         super().__init__(message)
         self.message = message
-
-
-# ── Reading the file ──────────────────────────────────────────────────────────
-
 
 def _cell(value) -> str:
     if value is None:
@@ -62,9 +48,7 @@ def _cell(value) -> str:
         return str(int(value))
     return str(value).strip()
 
-
 def read_table(upload):
-    """[(spreadsheet row number, [cell texts])] for the non-empty rows, header first."""
     name = (getattr(upload, 'name', '') or '').lower()
     if upload.size > MAX_FILE_BYTES:
         raise ImportFileError('The file is too large (2 MB at most).')
@@ -82,20 +66,17 @@ def read_table(upload):
         if any(cells):
             empty_run = 0
             table.append((number, cells))
-            if len(table) > MAX_ROWS + 1:  # + the header row
+            if len(table) > MAX_ROWS + 1:
                 raise ImportFileError(f'The file has more than {MAX_ROWS} students. Split it into smaller files.')
         else:
             empty_run += 1
-            if table and empty_run > MAX_ROWS:  # only empty (formatted) rows below the data
+            if table and empty_run > MAX_ROWS:
                 break
     if not table:
         raise ImportFileError('The file is empty.')
     return table
 
-
 def _read_csv(raw: bytes):
-    # Excel's "CSV UTF-8" starts with a BOM; its plain "CSV (Comma delimited)" is Windows-1252
-    # (read as latin-1, a ’ in O’Brien would become an invisible control character).
     for encoding in ('utf-8-sig', 'cp1252'):
         try:
             text = raw.decode(encoding)
@@ -113,7 +94,6 @@ def _read_csv(raw: bytes):
     except csv.Error:
         raise ImportFileError('This CSV file could not be read.')
 
-
 def _read_xlsx(upload):
     import openpyxl
 
@@ -127,7 +107,6 @@ def _read_xlsx(upload):
         raise ImportFileError('This Excel file could not be read. Save it as .xlsx and try again.')
     finally:
         workbook.close()
-
 
 def _columns(header):
     columns = {}
@@ -145,10 +124,6 @@ def _columns(header):
         )
     return columns
 
-
-# ── Checking the rows ─────────────────────────────────────────────────────────
-
-
 def _parse_student_id(text):
     try:
         value = int(text)
@@ -162,7 +137,6 @@ def _parse_student_id(text):
         value = int(number)
     return value if 0 < value <= MAX_STUDENT_ID else None
 
-
 def _split_name(full_name):
     full_name = ' '.join(full_name.split())
     if ' ' not in full_name:
@@ -170,9 +144,7 @@ def _split_name(full_name):
     first, last = full_name.rsplit(' ', 1)
     return first, last
 
-
 def plan_import(table):
-    """(rows for the response, rows to create). Writes nothing."""
     header_number, header = table[0]
     columns = _columns(header)
 
@@ -234,7 +206,6 @@ def plan_import(table):
             '_last_name': last_name,
         })
 
-    # The same student twice in the file
     first_row_with = {}
     for row in rows:
         if row['status'] == 'error':
@@ -246,13 +217,11 @@ def plan_import(table):
         if row['errors']:
             row['status'] = 'error'
 
-    # Already in the portal
     candidates = [r for r in rows if r['status'] == 'create']
     sids = {r['student_id'] for r in candidates}
     emails = {r['email'] for r in candidates}
-    # {student id: its account is deleted}
     existing_sids = dict(StudentProfile.objects.filter(student_id__in=sids).values_list('student_id', 'user__deleted'))
-    email_accounts = {}  # {email: (role, deleted)} of its account; a student account wins
+    email_accounts = {}
     for email_lower, username_lower, role, deleted in (
         User.objects.annotate(email_lower=Lower('email'), username_lower=Lower('username'))
         .filter(Q(email_lower__in=emails) | Q(username_lower__in=emails))
@@ -265,7 +234,6 @@ def plan_import(table):
         role, email_deleted = email_accounts.get(row['email'], (None, None))
         if row['student_id'] in existing_sids or role == User.Role.STUDENT:
             row['status'] = 'exists'
-            # Every account it matches is deleted: the admin should restore it, not look for it.
             matched = [existing_sids.get(row['student_id']), email_deleted if role == User.Role.STUDENT else None]
             matched = [deleted for deleted in matched if deleted is not None]
             if matched and all(matched):
@@ -278,12 +246,7 @@ def plan_import(table):
     public_rows = [{k: v for k, v in r.items() if not k.startswith('_')} for r in rows]
     return public_rows, to_create
 
-
-# ── Writing ───────────────────────────────────────────────────────────────────
-
-
 def apply_import(to_create, semester=None):
-    """Creates the accounts in one transaction. [{student_id, email, temporary_password}]."""
     created, profiles = [], []
     with transaction.atomic():
         for row in to_create:
@@ -304,6 +267,5 @@ def apply_import(to_create, semester=None):
             ))
             created.append({'student_id': row['student_id'], 'email': row['email'], 'temporary_password': password})
         if semester is not None:
-            # The semester's class group ("Main", made if missing); joined as with the roster's add.
             add_members(main_classroom(semester), profiles, join_date(semester))
     return created

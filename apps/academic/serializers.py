@@ -6,17 +6,11 @@ from .models import Semester, Course, Classroom, StudentClassroom, CourseInfo
 from apps.users.constants import LEVELS, TERMS
 from apps.users.models import StudentProfile
 
-
 def iso_date(day):
     return day.isoformat() if day else None
 
-
 def person_name(user) -> str:
     return user.get_full_name() or user.username
-
-
-# ── What the API sends (API v2 section 3) ─────────────────────────────────────
-
 
 def semester_row(semester, classroom=None, student_count=0, course_count=0) -> dict:
     return {
@@ -34,13 +28,11 @@ def semester_row(semester, classroom=None, student_count=0, course_count=0) -> d
         'course_count': course_count,
     }
 
-
 def semester_brief(semester) -> dict:
     return {
         'id': str(semester.id), 'label': semester.label, 'is_active': semester.is_active,
         'start_date': iso_date(semester.start_date), 'end_date': iso_date(semester.end_date),
     }
-
 
 def roster_row(membership) -> dict:
     student = membership.student
@@ -53,16 +45,12 @@ def roster_row(membership) -> dict:
         'left_at': iso_date(membership.left_at),
     }
 
-
 def teacher_brief(teacher):
-    """{id, name, deleted}: `deleted` = the teacher's account was deleted (choose another teacher)."""
     if not teacher:
         return None
     return {'id': str(teacher.id), 'name': person_name(teacher.user), 'deleted': teacher.user.deleted}
 
-
 def semester_course_row(ci) -> dict:
-    """A course taught in a semester (GET /admin/semesters/<id>/courses/)."""
     return {
         'course_info_id': str(ci.id),
         'course': {
@@ -74,9 +62,7 @@ def semester_course_row(ci) -> dict:
         'teacher': teacher_brief(ci.teacher),
     }
 
-
 def admin_course_info_row(ci, numbers) -> dict:
-    """GET /admin/course-info/ row; `numbers` from apps.academic.stats.course_numbers."""
     return {
         'id': str(ci.id),
         'course': {'id': str(ci.course.id), 'code': ci.course.code, 'title': ci.course.title},
@@ -87,15 +73,10 @@ def admin_course_info_row(ci, numbers) -> dict:
         'average_percent': numbers.average_percent,
     }
 
-
-# ── What the API reads ────────────────────────────────────────────────────────
-
 SESSION_PATTERN = re.compile(r'^(\d{4})\s*[-/–]\s*(\d{2}|\d{4})$')
 SESSION_MESSAGE = 'Session must look like 2025-26.'
 
-
 def normalize_session(text) -> str:
-    """"2025-26", "2025-2026" or "2025/26" -> "2025-26"."""
     match = SESSION_PATTERN.match(str(text).strip())
     if not match:
         raise serializers.ValidationError(SESSION_MESSAGE)
@@ -105,17 +86,15 @@ def normalize_session(text) -> str:
         raise serializers.ValidationError(SESSION_MESSAGE)
     return f'{first}-{expected % 100:02d}'
 
-
 def _check_dates(start, end):
     if start and end and end < start:
         raise serializers.ValidationError({'end_date': ['End date must be on or after the start date.']})
-
 
 class SemesterCreateSerializer(serializers.Serializer):
     level = serializers.ChoiceField(
         choices=LEVELS, error_messages={'invalid_choice': 'Level must be First, Second, Third or Fourth.'},
     )
-    semester = serializers.ChoiceField(  # the term
+    semester = serializers.ChoiceField(
         choices=TERMS,
         error_messages={'invalid_choice': 'Term must be I or II.', 'required': 'Term is required.',
                         'null': 'Term is required.'},
@@ -131,9 +110,7 @@ class SemesterCreateSerializer(serializers.Serializer):
         _check_dates(data.get('start_date'), data.get('end_date'))
         return data
 
-
 class SemesterUpdateSerializer(serializers.Serializer):
-    """PATCH: session, start and end date only (level and term never change)."""
     session = serializers.CharField(max_length=20, required=False)
     start_date = serializers.DateField(required=False, allow_null=True)
     end_date = serializers.DateField(required=False, allow_null=True)
@@ -153,19 +130,15 @@ class SemesterUpdateSerializer(serializers.Serializer):
         instance.save(update_fields=list(validated_data) or None)
         return instance
 
-
 class ProfileIdsSerializer(serializers.Serializer):
     profile_ids = serializers.ListField(child=serializers.UUIDField(), allow_empty=False, max_length=2000)
-
 
 class SemesterCourseSerializer(serializers.Serializer):
     course_id = serializers.UUIDField()
     teacher_id = serializers.UUIDField(required=False, allow_null=True)
 
-
 class CourseInfoTeacherSerializer(serializers.Serializer):
     teacher_id = serializers.UUIDField(allow_null=True)
-
 
 class PromoteSerializer(serializers.Serializer):
     target = SemesterCreateSerializer(required=False, allow_null=True)
@@ -182,13 +155,12 @@ class PromoteSerializer(serializers.Serializer):
             )
         return data
 
-
 class CourseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Course
         fields = ['id', 'code', 'title', 'content', 'credits', 'faculty', 'department', 'deleted']
         read_only_fields = ['deleted']
-        extra_kwargs = {'code': {'validators': []}}  # checked in validate_code with a clearer message
+        extra_kwargs = {'code': {'validators': []}}
 
     def validate_code(self, value):
         code = value.strip()
@@ -203,12 +175,7 @@ class CourseSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f'A course with the code {clash.code} already exists.{hint}')
         return code
 
-
-# ── Older endpoints (classrooms, course-info POST); the redesigned app does not use them ──
-
-
 class SemesterSerializer(serializers.ModelSerializer):
-    """Read-only semester summary inside the older classroom / course-info answers."""
     students = serializers.SerializerMethodField()
     courses = serializers.SerializerMethodField()
 
@@ -227,7 +194,6 @@ class SemesterSerializer(serializers.ModelSerializer):
     def get_courses(self, obj):
         return [str(ci.id) for ci in obj.course_infos.filter(deleted=False)]
 
-
 class ClassroomSerializer(serializers.ModelSerializer):
     semester_detail = SemesterSerializer(source='semester', read_only=True)
     student_count = serializers.SerializerMethodField()
@@ -239,9 +205,7 @@ class ClassroomSerializer(serializers.ModelSerializer):
     def get_student_count(self, obj):
         return obj.memberships.current().active_accounts().count()
 
-
 class StudentInClassroomSerializer(serializers.ModelSerializer):
-    """Minimal student info for classroom roster."""
     user_id = serializers.UUIDField(source='user.id', read_only=True)
     first_name = serializers.CharField(source='user.first_name', read_only=True)
     last_name = serializers.CharField(source='user.last_name', read_only=True)
@@ -255,14 +219,11 @@ class StudentInClassroomSerializer(serializers.ModelSerializer):
     def get_userName(self, obj):
         return obj.user.get_full_name() or obj.user.username
 
-
 class ClassroomStudentBulkSerializer(serializers.Serializer):
-    """For add/remove students from classroom."""
     student_ids = serializers.ListField(
         child=serializers.UUIDField(),
         min_length=1
     )
-
 
 class CourseInfoSerializer(serializers.ModelSerializer):
     course_detail = CourseSerializer(source='course', read_only=True)
@@ -299,7 +260,6 @@ class CourseInfoSerializer(serializers.ModelSerializer):
         else:
             ret['teacher'] = None
         return ret
-
 
 class PromoteStudentsSerializer(serializers.Serializer):
     new_level = serializers.CharField()

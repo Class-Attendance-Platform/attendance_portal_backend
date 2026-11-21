@@ -1,22 +1,3 @@
-"""
-Guesses joined_at for class group memberships made before join dates were recorded
-(API v2 section 9). Run once after the API v2 migrations.
-
-Migration academic 0002 gave every existing membership joined_at = null ("from the start"),
-so a student added to a semester mid-way under the old app would count as absent for every
-class held before they were added. The old app wrote a log for every member each time a class
-was saved, so a student's first log shows when they joined. For each membership with
-joined_at null (only class dates before its left_at are looked at):
-- their first log date in the class group's courses, if the group held classes before it;
-- no log at all while the group held classes: its last class date (on the join day only a
-  class with a log for them counts, so none of those classes count for them);
-- otherwise nothing changes (they were there from the first class).
-Limits: an old class re-saved later also logged the late joiners of that time, so a guess
-can be earlier than the real join (it never hides a class they have a log for).
-
-    python manage.py backfill_join_dates            # dry run: lists the changes
-    python manage.py backfill_join_dates --apply    # writes them
-"""
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -27,11 +8,10 @@ from apps.academic.models import CourseInfo, StudentClassroom
 from apps.academic.stats import round_percent
 from apps.attendance.models import AttendanceLog
 
-
 @dataclass
 class Guess:
     membership: StudentClassroom
-    joined_at: object          # the guessed date
+    joined_at: object
     held_before: int
     held_after: int
     attended: int
@@ -39,9 +19,7 @@ class Guess:
     def percent(self, held):
         return round_percent(self.attended * 100 / held) if held else None
 
-
 def guessed_join_dates() -> list:
-    """[Guess] for every membership with joined_at null whose guessed join date is later."""
     memberships = list(
         StudentClassroom.objects.filter(joined_at__isnull=True)
         .select_related('student__user', 'classroom__semester')
@@ -55,10 +33,10 @@ def guessed_join_dates() -> list:
         by_classroom[ci.classroom_id].append(ci)
 
     logs = AttendanceLog.objects.filter(course_info__in=course_infos).order_by()
-    dates = defaultdict(set)                    # course info id -> class dates
+    dates = defaultdict(set)
     for ci_id, day in logs.values_list('course_info_id', 'date').distinct():
         dates[ci_id].add(day)
-    logged, present = defaultdict(set), defaultdict(set)   # (course info id, student id) -> dates
+    logged, present = defaultdict(set), defaultdict(set)
     for ci_id, student_id, day, status in (
         logs.filter(student_id__in={m.student_id for m in memberships})
         .values_list('course_info_id', 'student_id', 'date', 'status').distinct()
@@ -79,10 +57,9 @@ def guessed_join_dates() -> list:
             continue
         mine = before_left(d for ci in group for d in logged[(ci.id, m.student_id)])
         if mine and min(group_dates) >= min(mine):
-            continue  # there from the first class
+            continue
         joined_at = min(mine) if mine else max(group_dates)
 
-        # What the student sees (courses not deleted): held before and after, attended
         guessed = StudentClassroom(joined_at=joined_at, left_at=m.left_at)
         held_before = held_after = attended = 0
         for ci in group:
@@ -103,10 +80,8 @@ def guessed_join_dates() -> list:
     ))
     return guesses
 
-
 def percent_text(value) -> str:
     return '-' if value is None else f'{value}%'
-
 
 class Command(BaseCommand):
     help = 'Set joined_at for students added mid-semester before join dates were kept (dry run unless --apply).'

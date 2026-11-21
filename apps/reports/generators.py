@@ -1,18 +1,3 @@
-"""
-Attendance report exports (API v2 section 8): CSV, XLSX, PDF and DOCX.
-
-Each export_* function takes a CourseInfo and an optional date and returns an HttpResponse.
-They all read one `Report` (build_report):
-- rows = the course's class list (StudentClassroom.objects.class_list), by student id
-- one date = one class: a student is present on a date if any log that day says PRESENT
-- a cell outside the student's membership (joined_at <= date < left_at; on the join day a
-  class held before they were added) is blank, not absent; held / attended / percent count
-  only the class dates inside it (apps/academic/stats.py)
-- times are local (Asia/Dhaka)
-The PDF and DOCX split the date grid into pages that each repeat #, student ID, name and the
-totals, so ID, name and % are always visible. The CSV stays a plain table (one header row;
-UTF-8 with a byte order mark). Percentages have one decimal, rounded down (stats.round_percent).
-"""
 import csv
 import io
 import re
@@ -28,39 +13,28 @@ PRESENT = 'PRESENT'
 ABSENT = 'ABSENT'
 SHORT = {PRESENT: 'P', ABSENT: 'A', '': ''}
 
-# Colours (hex without #)
 HEADER_BG = '1F4E79'
 PRESENT_BG = 'C6EFCE'
 ABSENT_BG = 'FFC7CE'
 LOW_TEXT = 'C00000'
 
-# Landscape A4 grid (PDF and DOCX), in cm: fixed columns, one date column, usable width
 PAGE_WIDTH_CM = 29.7
 MARGIN_CM = 1.5
-LEFT_COLUMNS_CM = [0.8, 1.9, 5.2]       # #, Student ID, Name
-RIGHT_COLUMNS_CM = [1.1, 1.4, 1.5]      # Held, Present, %
+LEFT_COLUMNS_CM = [0.8, 1.9, 5.2]
+RIGHT_COLUMNS_CM = [1.1, 1.4, 1.5]
 DATE_COLUMN_CM = 0.95
 
-
 def dates_per_page() -> int:
-    """How many date columns fit next to the fixed columns on one landscape A4 page."""
     usable = PAGE_WIDTH_CM - 2 * MARGIN_CM
     free = usable - sum(LEFT_COLUMNS_CM) - sum(RIGHT_COLUMNS_CM)
     return max(1, int(free // DATE_COLUMN_CM))
 
-
 def date_chunks(dates, size=None) -> list:
-    """The report dates in page-sized groups (one empty group when there are no dates)."""
     size = size or dates_per_page()
     return [dates[i:i + size] for i in range(0, len(dates), size)] or [[]]
 
-
 def chunk_caption(chunk, start, total) -> str:
-    """"Classes 16–30 of 40: 01 Oct 2026 to 30 Oct 2026" above each part of a split grid."""
     return f'Classes {start + 1}–{start + len(chunk)} of {total}: {day_text(chunk[0])} to {day_text(chunk[-1])}'
-
-
-# ── Shared data ───────────────────────────────────────────────────────────────
 
 @dataclass
 class ReportRow:
@@ -68,12 +42,11 @@ class ReportRow:
     student_id: int
     name: str
     email: str
-    cells: list            # one per report date: PRESENT | ABSENT | '' (not in the class that day)
+    cells: list
     held: int
     attended: int
-    percent: float = None  # None when nothing was held for them
+    percent: float = None
     below_min: bool = False
-
 
 @dataclass
 class Report:
@@ -83,10 +56,10 @@ class Report:
     semester_active: bool
     department: str
     teacher: str
-    generated_at: datetime         # local (Asia/Dhaka)
+    generated_at: datetime
     filter_date: date = None
-    dates: list = field(default_factory=list)   # oldest first; with filter_date: [filter_date]
-    class_on_date: bool = True                  # filter_date: was there a class that day?
+    dates: list = field(default_factory=list)
+    class_on_date: bool = True
     rows: list = field(default_factory=list)
 
     @property
@@ -132,29 +105,20 @@ class Report:
     def running_header(self) -> str:
         return f'{self.title}  ·  {self.semester_label}  ·  {self.department}  ·  {self.teacher}'
 
-
 def day_text(day) -> str:
     return f'{day:%d %b %Y}'
-
 
 def percent_text(value) -> str:
     return '-' if value is None else f'{value}%'
 
-
-# Characters an XML file (.xlsx, .docx) cannot hold: one in a stored name would break the export.
 XML_ILLEGAL = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
 
-
 def clean_text(value) -> str:
-    """Stored text (names, emails, course titles) without the characters XML cannot hold."""
     return XML_ILLEGAL.sub('', str(value))
 
-
 def spreadsheet_text(value) -> str:
-    """Text people typed (names), safe for Excel: a leading = + - @ would start a formula."""
     value = str(value)
     return f"'{value}" if value[:1] in ('=', '+', '-', '@', '\t', '\r') else value
-
 
 def build_report(course_info, filter_date=None) -> Report:
     from apps.academic.serializers import person_name
@@ -198,15 +162,10 @@ def build_report(course_info, filter_date=None) -> Report:
         ))
     return report
 
-
-# ── CSV ───────────────────────────────────────────────────────────────────────
-
 def export_csv(course_info, filter_date=None):
     report = build_report(course_info, filter_date)
     response = HttpResponse(content_type='text/csv; charset=utf-8')
     response['Content-Disposition'] = f'attachment; filename="{_filename(course_info, filter_date, "csv")}"'
-    # UTF-8 byte order mark: Excel on Windows otherwise reads the file in the local code page
-    # and garbles names with letters outside English (other programs skip it).
     response.write('\ufeff')
 
     writer = csv.writer(response)
@@ -223,9 +182,6 @@ def export_csv(course_info, filter_date=None):
             values += [row.held, row.attended, '' if row.percent is None else f'{row.percent}%']
         writer.writerow(values)
     return response
-
-
-# ── XLSX ──────────────────────────────────────────────────────────────────────
 
 def export_xlsx(course_info, filter_date=None):
     from openpyxl import Workbook
@@ -248,7 +204,6 @@ def export_xlsx(course_info, filter_date=None):
     thin = Side(style='thin', color='999999')
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # Header block: course, semester, department, teacher, dates, generated (Dhaka time)
     ws.cell(row=1, column=1, value=spreadsheet_text(report.title)).font = Font(bold=True, size=13, color=HEADER_BG)
     lines = report.info_lines() + [report.legend]
     for offset, text in enumerate(lines, 2):
@@ -298,7 +253,6 @@ def export_xlsx(course_info, filter_date=None):
         if row.below_min:
             cell.font = Font(bold=True, color=LOW_TEXT)
 
-    # Column widths from the table only (the header block may overflow to the right)
     for col in range(1, len(headers) + 1):
         letter = get_column_letter(col)
         if not filter_date and first_date_col <= col < first_date_col + len(report.dates):
@@ -306,7 +260,6 @@ def export_xlsx(course_info, filter_date=None):
             continue
         values = [ws.cell(row=r, column=col).value for r in range(header_row, header_row + 1 + len(report.rows))]
         ws.column_dimensions[letter].width = min(max((len(str(v or '')) for v in values), default=6) + 3, 40)
-    # Keep #, ID, name and email in view while scrolling through the dates
     ws.freeze_panes = ws.cell(row=header_row + 1, column=first_date_col)
 
     buffer = io.BytesIO()
@@ -317,9 +270,6 @@ def export_xlsx(course_info, filter_date=None):
     )
     response['Content-Disposition'] = f'attachment; filename="{_filename(course_info, filter_date, "xlsx")}"'
     return response
-
-
-# ── PDF ───────────────────────────────────────────────────────────────────────
 
 def export_pdf(course_info, filter_date=None):
     from reportlab.lib import colors
@@ -368,7 +318,6 @@ def export_pdf(course_info, filter_date=None):
         return Paragraph(escape(row.name), name_style)
 
     def one_date_table():
-        """#, ID, name, email and the status on the chosen date."""
         data = [['#', 'Student ID', 'Name', 'Email', 'Status']]
         cell_styles = [('ALIGN', (3, 1), (3, -1), 'LEFT')]
         for i, row in enumerate(report.rows, 1):
@@ -381,7 +330,6 @@ def export_pdf(course_info, filter_date=None):
         return table
 
     def grid_table(chunk, start):
-        """One page wide: #, ID, name, this group of dates, held, present, % (rows may continue)."""
         offset = len(LEFT_COLUMNS_CM)
         data = [['#', 'Student ID', 'Name'] + [f'{d:%d}\n{d:%b}' for d in chunk] + ['Held', 'Present', '%']]
         cell_styles = []
@@ -431,7 +379,6 @@ def export_pdf(course_info, filter_date=None):
         footer(canvas)
 
     def later_pages(canvas, _doc):
-        # Course, semester, department and teacher on every page after the first
         canvas.saveState()
         canvas.setFont('Helvetica', 8)
         canvas.setFillColor(colors.HexColor('#555555'))
@@ -450,9 +397,6 @@ def export_pdf(course_info, filter_date=None):
     response['Content-Disposition'] = f'attachment; filename="{_filename(course_info, filter_date, "pdf")}"'
     return response
 
-
-# ── DOCX ──────────────────────────────────────────────────────────────────────
-
 def export_docx(course_info, filter_date=None):
     from docx import Document
     from docx.enum.section import WD_ORIENT
@@ -463,7 +407,6 @@ def export_docx(course_info, filter_date=None):
     doc.styles['Normal'].font.name = 'Calibri'
     doc.styles['Normal'].font.size = Pt(9)
 
-    # Landscape A4; the running header and footer repeat on every page
     section = doc.sections[0]
     section.orientation = WD_ORIENT.LANDSCAPE
     section.page_width, section.page_height = Cm(PAGE_WIDTH_CM), Cm(21.0)
@@ -534,9 +477,7 @@ def export_docx(course_info, filter_date=None):
     response['Content-Disposition'] = f'attachment; filename="{_filename(course_info, filter_date, "docx")}"'
     return response
 
-
 def _docx_table(doc, headers, widths_cm):
-    """A grid table with a coloured header row that repeats on every page."""
     from docx.enum.table import WD_TABLE_ALIGNMENT
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -562,7 +503,6 @@ def _docx_table(doc, headers, widths_cm):
         _set_cell_bg(cell, HEADER_BG)
     return table
 
-
 def _docx_row(table, values, widths_cm, left_columns=()):
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Cm, Pt
@@ -575,19 +515,13 @@ def _docx_row(table, values, widths_cm, left_columns=()):
         para.add_run(str(value)).font.size = Pt(8)
     return cells
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 def _filename(course_info, filter_date, ext):
-    # Only safe characters: a quote or a control character in a code would break the header.
     code = re.sub(r'[^A-Za-z0-9_-]+', '_', course_info.course.code).strip('_') or 'course'
     if filter_date:
         return f'{code}_attendance_{filter_date}.{ext}'
     return f'{code}_attendance_full.{ext}'
 
-
 def _set_cell_bg(cell, hex_color: str):
-    """Set background color of a docx table cell."""
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     tc_pr = cell._tc.get_or_add_tcPr()

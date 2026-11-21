@@ -1,10 +1,3 @@
-"""
-Business logic layer for attendance — keeps views thin.
-
-Live sessions: `start` writes the session row; check-ins are saved directly to
-AttendanceLog; finalize_session() marks unsubmitted enrolled students as ABSENT.
-Corrections and roll calls change saved logs and keep an AttendanceChange trail.
-"""
 import datetime as dt
 import hashlib
 import logging
@@ -24,66 +17,47 @@ logger = logging.getLogger(__name__)
 
 MAX_SESSION_SECONDS = 30 * 60
 
-# Which AttendanceLog.Source a session's check-ins are saved with.
 SOURCE_FOR_MODE = {
     AttendanceSession.Mode.FINGERPRINT: AttendanceLog.Source.HARDWARE,
     AttendanceSession.Mode.QR_ONLINE: AttendanceLog.Source.QR_ONLINE,
     AttendanceSession.Mode.QR_OFFLINE: AttendanceLog.Source.QR_OFFLINE,
     AttendanceSession.Mode.FACE: AttendanceLog.Source.FACE,
 }
-# Method of a check-in saved before methods were recorded in the live data.
 DEFAULT_METHOD_FOR_MODE = {
     AttendanceSession.Mode.FINGERPRINT: AttendanceLog.Method.FINGERPRINT,
     AttendanceSession.Mode.QR_ONLINE: AttendanceLog.Method.QR,
     AttendanceSession.Mode.QR_OFFLINE: AttendanceLog.Method.QR,
 }
 
-# Submission results
 ADDED = 'added'
 CLOSED = 'closed'
 ALREADY_CHECKED_IN = 'already_checked_in'
 DEVICE_USED = 'device_used'
 
-
 def enrolled_memberships(course_info, day):
-    """Who is in the course's class group on `day` (deleted accounts left out)."""
     return StudentClassroom.objects.filter(
         classroom_id=course_info.classroom_id
     ).enrolled_on(day).active_accounts()
 
-
 def can_join_live(student, session) -> bool:
-    """A current member of the course's class group, enrolled on the session's date."""
     return enrolled_memberships(session.course_info, session.date).current().filter(student=student).exists()
 
-
 def local_datetime(timestamp):
-    """A unix timestamp as a local (Asia/Dhaka) date-time."""
     if isinstance(timestamp, (int, float)):
         return timezone.localtime(dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc))
     return timezone.localtime(timestamp)
 
-
 def record_check_in(session: AttendanceSession, student, method: str, device_id: str = '', now=None) -> str:
-    """
-    Records a student's check-in directly to the database.
-    Enforces:
-    1. Session is currently live and active
-    2. One check-in per student (ALREADY_CHECKED_IN)
-    3. One check-in per device in this session (DEVICE_USED) if device_id provided
-    """
     now = timezone.now() if now is None else now
     with transaction.atomic():
         locked_session = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
         if locked_session is None or not session_is_live(locked_session):
             return CLOSED
 
-        # Check device ID uniqueness across other students in this session
         if device_id:
             if AttendanceLog.objects.filter(session=locked_session, device_id=device_id).exclude(student=student).exists():
                 return DEVICE_USED
 
-        # Check if already checked in
         existing = AttendanceLog.objects.filter(session=locked_session, student=student).first()
         if existing is not None and existing.status == AttendanceLog.Status.PRESENT:
             return ALREADY_CHECKED_IN
@@ -111,12 +85,7 @@ def record_check_in(session: AttendanceSession, student, method: str, device_id:
             )
         return ADDED
 
-
 def finalize_session(session: AttendanceSession):
-    """
-    Ends a session and marks absent all remaining enrolled students who did not check in.
-    Safe to call multiple times concurrently.
-    """
     with transaction.atomic():
         locked = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
         if locked is None or not locked.is_active:
@@ -150,12 +119,7 @@ def finalize_session(session: AttendanceSession):
             AttendanceLog.objects.bulk_create(absent_logs, ignore_conflicts=True)
     return locked
 
-
 def commit_session_to_db(session: AttendanceSession, submissions: dict):
-    """
-    Saves submissions directly to AttendanceLog for a session, and marks remaining enrolled students absent.
-    Used by seeding commands and test helpers.
-    """
     source = SOURCE_FOR_MODE.get(session.mode, AttendanceLog.Source.QR_ONLINE)
     students_by_id = {s.student_id: s for s in StudentProfile.objects.all()}
     now_time = timezone.localtime().time()
@@ -188,31 +152,23 @@ def commit_session_to_db(session: AttendanceSession, submissions: dict):
         )
     finalize_session(session)
 
-
 def session_has_ended(session: AttendanceSession, cache_data=None) -> bool:
-    """True once check-ins are closed or duration has expired."""
     if not session.is_active:
         return True
     return timezone.now() >= session.started_at + timedelta(seconds=session.duration_seconds)
 
-
 def session_is_live(session: AttendanceSession, cache_data=None) -> bool:
     return session.is_active and not session_has_ended(session)
 
-
 def session_ends_at(session: AttendanceSession, cache_data=None):
-    """When check-ins close."""
     return timezone.localtime(session.started_at + timedelta(seconds=session.duration_seconds))
-
 
 def session_time_left(session: AttendanceSession, cache_data=None) -> int:
     if not session.is_active:
         return 0
     return max(0, int((session_ends_at(session) - timezone.now()).total_seconds()))
 
-
 def session_payload(session: AttendanceSession, cache_data=None) -> dict:
-    """The live session contract payload."""
     return {
         'id': str(session.id),
         'course_info_id': str(session.course_info_id),
@@ -224,9 +180,7 @@ def session_payload(session: AttendanceSession, cache_data=None) -> dict:
         'code_period': codes.PERIOD,
     }
 
-
 def finalize_ended_sessions(sessions):
-    """Saves any session whose duration has elapsed."""
     for session in sessions.filter(is_active=True):
         try:
             if session_has_ended(session):
@@ -234,14 +188,10 @@ def finalize_ended_sessions(sessions):
         except Exception:
             logger.exception('Could not finalize ended attendance session %s', session.id)
 
-
 def finalize_expired_sessions(course_info):
-    """Saves any session of this course whose timer has run out."""
     finalize_ended_sessions(AttendanceSession.objects.filter(course_info=course_info))
 
-
 def live_sessions(sessions) -> list:
-    """[(session, None)] of the sessions still taking check-ins (ended ones are saved first)."""
     finalize_ended_sessions(sessions)
     result = []
     for session in sessions.filter(is_active=True):
@@ -249,18 +199,11 @@ def live_sessions(sessions) -> list:
             result.append((session, None))
     return result
 
-
 def live_session(course_info):
-    """(session, None) of the course's live session, or (None, None)."""
     found = live_sessions(AttendanceSession.objects.filter(course_info=course_info).select_related('course_info'))
     return found[0] if found else (None, None)
 
-
 def cancel_session(session: AttendanceSession) -> str:
-    """
-    Discards a session that has not been saved: the row and its logs are removed.
-    Returns 'cancelled', 'saved' (already ended: nothing changed) or 'gone'.
-    """
     with transaction.atomic():
         locked = AttendanceSession.objects.select_for_update().filter(pk=session.pk).first()
         if locked is None:
@@ -270,9 +213,6 @@ def cancel_session(session: AttendanceSession) -> str:
         locked.delete()
     return 'cancelled'
 
-
-# ── Corrections and roll calls (section 6) ────────────────────────────────────
-
 def _change(log, status, user, now):
     change = AttendanceChange(log=log, old_status=log.status, new_status=status, changed_by=user, changed_at=now)
     log.status = status
@@ -281,12 +221,7 @@ def _change(log, status, user, now):
     log.is_modified_by_teacher = True
     return change
 
-
 def _set_status(course_info, student, day, status, logs, user, now, record_new):
-    """
-    Makes the student's day status `status`. Existing logs keep their method and source;
-    only those with another status change. Returns 'created', 'changed' or None.
-    """
     if not logs:
         log = AttendanceLog.objects.create(
             course_info=course_info, student=student, date=day, time=timezone.localtime(now).time(),
@@ -306,20 +241,10 @@ def _set_status(course_info, student, day, status, logs, user, now, record_new):
     AttendanceChange.objects.bulk_create(changes)
     return 'changed'
 
-
 def _lock_course(course_info):
-    """
-    Serialises corrections of one course (no double logs from double taps). Locks only this
-    row: order_by() drops CourseInfo's Meta ordering, whose joins FOR UPDATE would lock too.
-    """
     CourseInfo.objects.select_for_update().filter(pk=course_info.pk).order_by().first()
 
-
 def correct_attendance(course_info, student, day, status, user) -> bool:
-    """
-    One student's status on a date that has a class (PUT .../attendance/). Records who
-    changed it and when, with an AttendanceChange row. Returns False if it was already so.
-    """
     now = timezone.now()
     with transaction.atomic():
         _lock_course(course_info)
@@ -328,16 +253,10 @@ def correct_attendance(course_info, student, day, status, user) -> bool:
         ))
         return _set_status(course_info, student, day, status, logs, user, now, record_new=True) is not None
 
-
 class DateChanged(Exception):
-    """The date's attendance changed after the roll call page loaded it (roll_call `expected_version`)."""
-
+    pass
 
 def roll_call_list(course_info, day, logs=None) -> list:
-    """
-    [(membership, day status or None)] of everyone enrolled on `day` (former members too, by
-    student id): whom a roll call for that date covers. `logs` = {student id: [logs]} of the date.
-    """
     if logs is None:
         logs = defaultdict(list)
         for log in AttendanceLog.objects.filter(course_info=course_info, date=day):
@@ -350,26 +269,11 @@ def roll_call_list(course_info, day, logs=None) -> list:
         rows.append((membership, day_status(found)[0] if found else None))
     return rows
 
-
 def roll_call_version(rows) -> str:
-    """A short fingerprint of a date's roll call list and statuses (changes when either does)."""
     text = '|'.join(f'{m.student_id}:{status or "-"}' for m, status in rows)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
-
 def roll_call(course_info, day, present_ids, user, expected_version=None, absent_ids=None) -> dict:
-    """
-    Saves a roll call for a date (creates the class if missing). Students in `present_ids`
-    become present. With `absent_ids`, those become absent and the other enrolled students
-    are left as they are (no log is made for a student without a mark); without it (older
-    apps), every other student enrolled on that date is absent. A log is created if missing;
-    an existing one changes only if its status differs (recorded like a correction). Other
-    methods are never re-labelled.
-    With `expected_version` (from the roll call list the page showed), raises DateChanged
-    instead when the date's list or statuses changed since, so a stale page overwrites nothing.
-    Returns the enrolled students' day statuses afterwards: {present, absent, unmarked (no
-    log that day), changed (existing statuses that changed)}.
-    """
     present_ids = {str(i) for i in present_ids}
     absent_ids = None if absent_ids is None else {str(i) for i in absent_ids}
     now = timezone.now()
@@ -388,7 +292,7 @@ def roll_call(course_info, day, present_ids, user, expected_version=None, absent
                 status = AttendanceLog.Status.PRESENT
             elif absent_ids is None or str(student.id) in absent_ids:
                 status = AttendanceLog.Status.ABSENT
-            else:  # not marked: their day stays as it is (no log is made: on the join day it does not count)
+            else:
                 if not student_logs:
                     counts['unmarked'] += 1
                 elif day_status(student_logs)[0] == AttendanceLog.Status.PRESENT:

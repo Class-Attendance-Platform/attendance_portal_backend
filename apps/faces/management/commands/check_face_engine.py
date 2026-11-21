@@ -1,9 +1,3 @@
-"""
-Checks that face recognition works on this computer: loads the models and
-counts the faces in a photo. Reads only the photo; writes nothing.
-
-    python manage.py check_face_engine path\\to\\class-photo.jpg --settings=config.settings.test
-"""
 import time
 
 from django.conf import settings
@@ -12,7 +6,6 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.faces.engines import FaceEngineUnavailable, get_engine
 from apps.faces.services import FaceError, read_image
-
 
 class Command(BaseCommand):
     help = 'Load the face models and count the faces in a photo.'

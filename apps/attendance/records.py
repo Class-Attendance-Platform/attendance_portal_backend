@@ -1,14 +1,3 @@
-"""
-Reading attendance by day (API v2 sections 6 and 7).
-
-One date = one class: a student is present on a date if any of that day's logs marks them
-present (LATE, old data only, counts as not present). A course's class dates are the dates
-that have any log. For a student only the class dates inside their membership count
-(joined_at <= date < left_at; on the join day only with a log for them, since a class held
-before they were added that day has none: StudentClassroom.counts_on): those are `held`; the
-others show status null ("not enrolled"). A class date inside the membership without a log for
-them counts as absent.
-"""
 from collections import defaultdict
 
 from django.conf import settings
@@ -23,47 +12,30 @@ from apps.attendance.models import AttendanceLog
 PRESENT = AttendanceLog.Status.PRESENT
 ABSENT = AttendanceLog.Status.ABSENT
 
-
 def parse_day(text):
-    """A YYYY-MM-DD date (leading zeros optional), or None if it is not one."""
     try:
         return parse_date(str(text).strip()) if len(str(text).strip()) <= 10 else None
     except ValueError:
         return None
 
-
 def iso_datetime(value):
     return timezone.localtime(value).isoformat() if value else None
-
 
 def percent(attended, held):
     return round_percent(attended * 100 / held) if held else None
 
-
 def below_min(attended, held) -> bool:
     return held > 0 and attended * 100 < settings.ATTENDANCE_MIN_PERCENT * held
 
-
 def classes_needed(attended, held, minimum=None):
-    """
-    Classes in a row to attend to reach the minimum percent (0 if already there; None if
-    it can never be reached, i.e. a 100% minimum after a missed class).
-    """
     minimum = settings.ATTENDANCE_MIN_PERCENT if minimum is None else minimum
     if attended * 100 >= minimum * held:
         return 0
     if minimum >= 100:
         return None
-    return -(-(minimum * held - 100 * attended) // (100 - minimum))  # ceiling division
-
+    return -(-(minimum * held - 100 * attended) // (100 - minimum))
 
 def day_status(logs):
-    """
-    (status, deciding log) for one student's logs on one date (logs not empty). Present if
-    any log says so: the first present log decides. Absent: the log a teacher changed last
-    decides (a correction changes only the logs with another status, so on a day with several
-    sessions the others stay unchanged), else the first log.
-    """
     def first(candidates):
         return min(candidates, key=lambda log: (log.time is None, log.time or 0))
 
@@ -75,21 +47,12 @@ def day_status(logs):
         return ABSENT, max(changed, key=lambda log: log.changed_at)
     return ABSENT, first(logs)
 
-
 def shown_method(log):
-    """
-    How the student was marked present (section 6), from the log deciding the day. A
-    correction keeps the stored method, so: an absent day shows only TEACHER (a roll call
-    or correction made the log), else null; a present day whose log had no method (absent
-    in a live/face session, then changed by a teacher) shows TEACHER.
-    """
     if log.status == PRESENT:
         return log.method or (AttendanceLog.Method.TEACHER if log.is_modified_by_teacher else None)
     return log.method if log.method == AttendanceLog.Method.TEACHER else None
 
-
 def log_details(log) -> dict:
-    """method / changed_by / changed_at of the log that decides a day (None without a log)."""
     if log is None:
         return {'method': None, 'changed_by': None, 'changed_at': None}
     return {
@@ -98,14 +61,7 @@ def log_details(log) -> dict:
         'changed_at': iso_datetime(log.changed_at),
     }
 
-
 def absent_reason(log):
-    """
-    Why an absent day is absent (section 7), from the log that decides it: "changed" (a
-    teacher corrected it to absent), "roll_call" (marked absent in a roll call), "class_photo"
-    (absent in a class photo session) or "not_checked_in" (absent in a live session; also a
-    class date inside the membership without a log for them).
-    """
     if log is None:
         return 'not_checked_in'
     if log.changed_at is not None or log.changed_by_id is not None:
@@ -116,18 +72,14 @@ def absent_reason(log):
         return 'roll_call'
     return 'not_checked_in'
 
-
 def class_dates(course_info_ids) -> dict:
-    """{course info id: [its class dates, newest first]}."""
     dates = defaultdict(set)
     rows = AttendanceLog.objects.filter(course_info_id__in=list(course_info_ids)).order_by()
     for ci_id, day in rows.values_list('course_info_id', 'date').distinct():
         dates[ci_id].add(day)
     return {ci_id: sorted(days, reverse=True) for ci_id, days in dates.items()}
 
-
 def logs_by_day(course_info_ids, student) -> dict:
-    """{course info id: {date: [the student's logs that day]}}."""
     result = defaultdict(lambda: defaultdict(list))
     logs = AttendanceLog.objects.filter(
         course_info_id__in=list(course_info_ids), student=student,
@@ -136,14 +88,7 @@ def logs_by_day(course_info_ids, student) -> dict:
         result[log.course_info_id][log.date].append(log)
     return result
 
-
 def student_days(dates, membership, day_logs, reasons=False) -> list:
-    """
-    One row per class date (`dates`, newest first): {date, status, method, changed_by,
-    changed_at}; status null outside the membership (and on the join day without a log);
-    `day_logs` = {date: [logs]}. With `reasons`, rows also have `absent_reason` (null unless
-    the day is absent).
-    """
     rows = []
     for day in dates:
         logs = day_logs.get(day)
@@ -157,34 +102,21 @@ def student_days(dates, membership, day_logs, reasons=False) -> list:
         rows.append(row)
     return rows
 
-
 def count_days(days):
-    """(attended, held) from student_days rows."""
     held = [d for d in days if d['status'] is not None]
     return sum(d['status'] == PRESENT for d in held), len(held)
 
-
 def course_days(course_info, membership, reasons=False) -> list:
-    """The student's day rows for one course (newest first)."""
     dates = class_dates([course_info.id]).get(course_info.id, [])
     day_logs = logs_by_day([course_info.id], membership.student)[course_info.id]
     return student_days(dates, membership, day_logs, reasons=reasons)
 
-
-# ── Student dashboard (section 7) ─────────────────────────────────────────────
-
 def get_student_attendance_summary(student_profile):
-    """
-    Attendance grouped by semester for the student dashboard: every semester whose class
-    group they are or were in (history stays; left_at set = a former member), with that
-    group's courses, sorted by level then term. Only dates inside their membership count.
-    """
     memberships = (
         StudentClassroom.objects.filter(
             student=student_profile, classroom__deleted=False, classroom__semester__deleted=False,
         ).select_related('classroom__semester')
     )
-    # One entry per semester (current membership first if there are several)
     by_semester = {}
     for membership in sorted(memberships, key=lambda m: m.left_at is not None):
         by_semester.setdefault(membership.classroom.semester_id, membership)
@@ -229,7 +161,6 @@ def get_student_attendance_summary(student_profile):
                 'percent': percent(attended, held),
                 'below_min': below_min(attended, held),
                 'classes_needed': classes_needed(attended, held),
-                # Older keys (same numbers; two decimals, also rounded down)
                 'totalClasses': held,
                 'presentCount': attended,
                 'percentage': attended * 10000 // held / 100 if held else 0.0,
@@ -249,7 +180,6 @@ def get_student_attendance_summary(student_profile):
             'end_date': iso_date(sem.end_date),
             'is_active': sem.is_active,
             'overall_percent': percent(total_attended, total_held),
-            # Their membership: left_at set = a former member (history only, not current)
             'joined_at': iso_date(membership.joined_at),
             'left_at': iso_date(membership.left_at),
             'courses': courses_data,
@@ -257,9 +187,7 @@ def get_student_attendance_summary(student_profile):
 
     return result
 
-
 def student_course_detail(course_info, membership) -> dict:
-    """GET /student/course-info/<id>/ for the signed-in student (section 7)."""
     days = course_days(course_info, membership, reasons=True)
     attended, held = count_days(days)
     teacher = course_info.teacher
@@ -272,7 +200,6 @@ def student_course_detail(course_info, membership) -> dict:
             'teacher_name': person_name(teacher.user) if teacher else None,
             'semester': {k: v for k, v in semester_brief(course_info.semester).items() if k != 'id'},
         },
-        # Their membership: days before joined_at / from left_at on are outside it (status null)
         'joined_at': iso_date(membership.joined_at),
         'left_at': iso_date(membership.left_at),
         'attended': attended,

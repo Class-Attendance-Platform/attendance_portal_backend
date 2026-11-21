@@ -1,12 +1,3 @@
-"""
-Seeds all courses from HSTU CSE 2017 Syllabus (154.75 credits total, 107 courses),
-real HSTU CSE teachers, and realistic dummy students into the database.
-
-Usage:
-    python manage.py seed_hstu_curriculum --settings=config.settings.test           # dry run
-    python manage.py seed_hstu_curriculum --settings=config.settings.test --apply   # write
-    python manage.py seed_hstu_curriculum --apply --allow-remote                    # write to configured db
-"""
 from datetime import timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
@@ -20,9 +11,7 @@ from apps.users.models import AdminProfile, StudentProfile, TeacherProfile, User
 
 DEFAULT_PASSWORD = 'HstuCse@2026'
 
-# Real faculty members of HSTU Computer Science & Engineering department
 HSTU_CSE_TEACHERS = [
-    # (email, first_name, last_name, designation, emp_id)
     ('mamun@hstu.ac.bd', 'Dr. Md. Abdulla Al', 'Mamun', 'Professor & Chairman', 'EMP-CSE-001'),
     ('nitu@hstu.ac.bd', 'Adiba Mahjabin', 'Nitu', 'Professor', 'EMP-CSE-002'),
     ('delowar@hstu.ac.bd', 'Dr. Md. Delowar', 'Hossain', 'Professor', 'EMP-CSE-003'),
@@ -49,10 +38,7 @@ HSTU_CSE_TEACHERS = [
     ('hanif@hstu.ac.bd', 'Md. Abu', 'Hanif', 'Lecturer', 'EMP-CSE-024'),
 ]
 
-# HSTU CSE 2017 Syllabus Courses
-# (code, title, credits_enum, level, term, department_override)
 CURRICULUM_COURSES = [
-    # ── Level 1 Semester I (19.00 Credits) ──────────────────────────────────
     ('CSE 101', 'Fundamentals of Computer and Computing', Course.Credits.CREDIT_2_00, 'First', 'I', None),
     ('CSE 102', 'Fundamentals of Computer and Computing Sessional', Course.Credits.CREDIT_0_75, 'First', 'I', None),
     ('CSE 103', 'Discrete Mathematics', Course.Credits.CREDIT_3_00, 'First', 'I', None),
@@ -63,7 +49,6 @@ CURRICULUM_COURSES = [
     ('ENG 101', 'Communicative English', Course.Credits.CREDIT_2_00, 'First', 'I', 'ENGLISH'),
     ('ENG 102', 'Communicative English Sessional', Course.Credits.CREDIT_0_75, 'First', 'I', 'ENGLISH'),
 
-    # ── Level 1 Semester II (19.25 Credits) ─────────────────────────────────
     ('CSE 151', 'Structured Programming Language', Course.Credits.CREDIT_3_00, 'First', 'II', None),
     ('CSE 152', 'Structured Programming Language Sessional', Course.Credits.CREDIT_1_50, 'First', 'II', None),
     ('CSE 153', 'Digital Logic Design', Course.Credits.CREDIT_3_00, 'First', 'II', None),
@@ -74,7 +59,6 @@ CURRICULUM_COURSES = [
     ('MAT 105', 'Mathematics II (Matrix, Ordinary and Partial Differential Equations, and Series Solutions)', Course.Credits.CREDIT_3_00, 'First', 'II', 'MATHEMATICS'),
     ('SOC 103', 'Society and Technology', Course.Credits.CREDIT_2_00, 'First', 'II', 'SOCIOLOGY'),
 
-    # ── Level 2 Semester I (21.50 Credits) ──────────────────────────────────
     ('CSE 201', 'Object Oriented Programming', Course.Credits.CREDIT_3_00, 'Second', 'I', None),
     ('CSE 202', 'Object Oriented Programming (C++) Sessional', Course.Credits.CREDIT_1_50, 'Second', 'I', None),
     ('CSE 203', 'Data Structures', Course.Credits.CREDIT_3_00, 'Second', 'I', None),
@@ -86,7 +70,6 @@ CURRICULUM_COURSES = [
     ('MAT 201', 'Mathematics III (Vector, Complex Variable, Fourier Analysis and Laplace Transformation)', Course.Credits.CREDIT_3_00, 'Second', 'I', 'MATHEMATICS'),
     ('STT 227', 'Statistics (Introduction to Statistics and Probability)', Course.Credits.CREDIT_3_00, 'Second', 'I', 'STATISTICS'),
 
-    # ── Level 2 Semester II (20.00 Credits) ─────────────────────────────────
     ('CSE 254', 'Object Oriented Programming (Java) Sessional', Course.Credits.CREDIT_1_50, 'Second', 'II', None),
     ('CSE 255', 'Algorithms Analysis and Design', Course.Credits.CREDIT_3_00, 'Second', 'II', None),
     ('CSE 256', 'Algorithms Analysis and Design Sessional', Course.Credits.CREDIT_1_50, 'Second', 'II', None),
@@ -98,7 +81,6 @@ CURRICULUM_COURSES = [
     ('ACT 205', 'Financial and Managerial Accounting', Course.Credits.CREDIT_2_00, 'Second', 'II', 'ACCOUNTING'),
     ('CSE 252', 'Application Development Sessional', Course.Credits.CREDIT_1_50, 'Second', 'II', None),
 
-    # ── Level 3 Semester I (18.50 Credits) ──────────────────────────────────
     ('CSE 303', 'Database', Course.Credits.CREDIT_3_00, 'Third', 'I', None),
     ('CSE 304', 'Database Sessional', Course.Credits.CREDIT_1_50, 'Third', 'I', None),
     ('CSE 305', 'Software Engineering', Course.Credits.CREDIT_3_00, 'Third', 'I', None),
@@ -108,7 +90,6 @@ CURRICULUM_COURSES = [
     ('ECN 305', 'Economics', Course.Credits.CREDIT_2_00, 'Third', 'I', 'ECONOMICS'),
     ('CSE 302', 'Software Development Sessional', Course.Credits.CREDIT_1_50, 'Third', 'I', None),
 
-    # ── Level 3 Semester II (18.50 Credits) ─────────────────────────────────
     ('CSE 353', 'Operating System', Course.Credits.CREDIT_3_00, 'Third', 'II', None),
     ('CSE 354', 'Operating System Sessional', Course.Credits.CREDIT_0_75, 'Third', 'II', None),
     ('CSE 355', 'Web Engineering', Course.Credits.CREDIT_2_00, 'Third', 'II', None),
@@ -120,7 +101,6 @@ CURRICULUM_COURSES = [
     ('CSE 361', 'Mathematical Analysis for Computer Science', Course.Credits.CREDIT_3_00, 'Third', 'II', None),
     ('CSE 352', 'Web and Mobile Application Development Sessional', Course.Credits.CREDIT_1_50, 'Third', 'II', None),
 
-    # ── Level 4 Semester I (18.75 Credits with Options) ────────────────────
     ('CSE 403', 'Artificial Intelligence', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
     ('CSE 404', 'Artificial Intelligence Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'I', None),
     ('CSE 405', 'Computer Graphics and Image Processing', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
@@ -128,7 +108,6 @@ CURRICULUM_COURSES = [
     ('CSE 408', 'Technical Writing and Presentation Skill Development Sessional', Course.Credits.CREDIT_1_50, 'Fourth', 'I', None),
     ('CSE 402', 'Project and Thesis Sessional', Course.Credits.CREDIT_1_50, 'Fourth', 'I', None),
 
-    # Option I (Level 4 Semester I)
     ('CSE 409', 'Advanced Database Management System', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
     ('CSE 410', 'Advanced Database Management System Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'I', None),
     ('CSE 411', 'Advanced Algorithm Design', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
@@ -140,7 +119,6 @@ CURRICULUM_COURSES = [
     ('CSE 417', 'Communication Engineering', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
     ('CSE 418', 'Communication Engineering Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'I', None),
 
-    # Option II (Level 4 Semester I)
     ('CSE 419', 'System Analysis and Design', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
     ('CSE 420', 'System Analysis and Design Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'I', None),
     ('CSE 421', 'Software Testing and Quality Assurance', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
@@ -152,14 +130,12 @@ CURRICULUM_COURSES = [
     ('CSE 427', 'Simulation and Modelling', Course.Credits.CREDIT_3_00, 'Fourth', 'I', None),
     ('CSE 428', 'Simulation and Modelling Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'I', None),
 
-    # ── Level 4 Semester II (19.25 Credits with Options) ───────────────────
     ('CSE 453', 'Multimedia System and Animation Techniques', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
     ('CSE 454', 'Multimedia System and Animation Techniques Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'II', None),
     ('CSE 455', 'Computer Ethics and Cyber Law', Course.Credits.CREDIT_2_00, 'Fourth', 'II', None),
     ('MGT 405', 'Industrial Management', Course.Credits.CREDIT_3_00, 'Fourth', 'II', 'MANAGEMENT'),
     ('CSE 452', 'Project and Thesis Sessional', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
 
-    # Option III (Level 4 Semester II)
     ('CSE 459', 'Data Mining and Warehousing', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
     ('CSE 460', 'Data Mining and Warehousing Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'II', None),
     ('CSE 461', 'Cloud Computing', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
@@ -171,7 +147,6 @@ CURRICULUM_COURSES = [
     ('CSE 467', 'Parallel and Distributed System', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
     ('CSE 468', 'Parallel and Distributed System Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'II', None),
 
-    # Option IV (Level 4 Semester II)
     ('CSE 469', 'Machine Learning and Pattern Recognition', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
     ('CSE 470', 'Machine Learning and Pattern Recognition Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'II', None),
     ('CSE 471', 'Natural Language Processing', Course.Credits.CREDIT_3_00, 'Fourth', 'II', None),
@@ -184,7 +159,6 @@ CURRICULUM_COURSES = [
     ('CSE 478', 'Bioinformatics Sessional', Course.Credits.CREDIT_0_75, 'Fourth', 'II', None),
 ]
 
-# Student names for dummy batch generator
 FIRST_NAMES = [
     'Afsana', 'Arif', 'Ashiqur', 'Asif', 'Fahim', 'Farhan', 'Farzana', 'Hasibul',
     'Ishrat', 'Mahmudul', 'Mehedi', 'Naimur', 'Nasrin', 'Nazmul', 'Nusrat',
@@ -197,18 +171,13 @@ LAST_NAMES = [
     'Karim', 'Khan', 'Miah', 'Parvin', 'Rahman', 'Sarker', 'Siddique', 'Sultana'
 ]
 
-# Semester setups (Level, Term, Session, Batch Code, Year Prefix)
-
-# Pending approval accounts (teachers and students awaiting admin verification)
 PENDING_TEACHERS = [
-    # (email, first_name, last_name, employee_id)
     ('pending.teacher1@hstu.ac.bd', 'Kazi', 'Tanvir Ahmed', 'EMP-CSE-025'),
     ('pending.teacher2@hstu.ac.bd', 'Mahmuda', 'Khatun', 'EMP-CSE-026'),
     ('pending.teacher3@hstu.ac.bd', 'Shubhashis', 'Roy', 'EMP-CSE-027'),
 ]
 
 PENDING_STUDENTS = [
-    # (email, student_id, first_name, last_name, current_level, current_semester)
     ('pending.student2402016@hstu.ac.bd', 2402016, 'Nadia', 'Sultana', 'First', 'I'),
     ('pending.student2402017@hstu.ac.bd', 2402017, 'Samiul', 'Haque', 'First', 'I'),
     ('pending.student2302016@hstu.ac.bd', 2302016, 'Tanjila', 'Akter', 'Second', 'I'),
@@ -222,7 +191,6 @@ SEMESTER_CONFIGS = [
     ('Third', 'I', '2022-23', 'Batch 22', 22),
     ('Fourth', 'I', '2021-22', 'Batch 21', 21),
 ]
-
 
 class Command(BaseCommand):
     help = 'Seed HSTU CSE 2017 syllabus courses, HSTU teachers, and dummy students (dry run unless --apply).'
@@ -345,7 +313,6 @@ class Command(BaseCommand):
             room = main_classroom(semester)
             classrooms_count += 1
 
-            # Find courses corresponding to this semester
             semester_courses = [
                 c for c in CURRICULUM_COURSES
                 if c[3] == level and c[4] == term
@@ -365,8 +332,6 @@ class Command(BaseCommand):
                     ci.teacher = assigned_teacher
                     ci.save(update_fields=['teacher'])
 
-            # Dummy students for this batch
-            # HSTU Student ID: YY02XXX (e.g. 2402001 .. 2402015)
             dept_code = '02'
             for roll in range(1, students_per_batch + 1):
                 student_id = int(f'{year_prefix}{dept_code}{roll:03d}')
