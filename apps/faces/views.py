@@ -22,7 +22,6 @@ from apps.users.throttles import FaceRegisterThrottle
 from config.errors import error_response
 
 logger = logging.getLogger(__name__)
-MAX_CLASS_PHOTOS = 3
 
 def run_face_task(task):
     try:
@@ -121,9 +120,9 @@ class RecognizeClassView(APIView):
         if error:
             return error
         photos = request.FILES.getlist('photos')
-        if not 1 <= len(photos) <= MAX_CLASS_PHOTOS:
+        if not photos:
             return Response(
-                {'success': False, 'message': f'Send 1 to {MAX_CLASS_PHOTOS} class photos.'}, status=400
+                {'success': False, 'message': 'Send at least 1 class photo.'}, status=400
             )
         return run_face_task(lambda: Response({'success': True, **services.recognize_class(ci, photos)}))
 
